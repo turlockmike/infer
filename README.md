@@ -41,13 +41,16 @@ infer -j '["string"]' "list files in /tmp"
 
 ## Config
 
-Create `~/.config/infer/config.json`:
-
-```json
-{ "url": "http://localhost:11434/v1", "model": "gemma4:latest", "api_key": "ollama" }
+```bash
+infer config set url http://localhost:11434/v1
+infer config set model gemma4:latest
+infer config set api_key ollama
+infer config show
+infer config get model
+infer config unset model
 ```
 
-Local overrides: `.infer.json` (config) and `.infer.md` (system prompt append).
+Local overrides: `.infer.json` (config) and `.infer.md` (system prompt append, per-project).
 
 **Roles** — named system prompt presets at `~/.config/infer/roles/<name>.md`:
 
