@@ -151,7 +151,10 @@ export function validateShape(data: unknown, shape: unknown): string | null {
 
 // --- Bash execution ---
 async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cwd: string): Promise<string> {
-  if (!sandbox) {
+  if (!sandbox || process.platform !== "darwin") {
+    if (sandbox && process.platform !== "darwin") {
+      process.stderr.write("infer: warning: sandbox requires macOS — running without sandbox\n");
+    }
     const result = spawnSync(cmd, { shell: true, cwd, encoding: "utf8" });
     return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
   }

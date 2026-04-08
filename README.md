@@ -51,10 +51,12 @@ infer -f config.yaml "is this valid?"
 
 ## Sandbox
 
-By default, bash commands run inside [just-bash](https://github.com/vercel-labs/just-bash) — a sandboxed bash interpreter. Network access is blocked and writes are restricted to the current directory and `/tmp`.
+By default, bash commands run inside macOS [Seatbelt](https://developer.apple.com/library/archive/documentation/Security/Conceptual/AppSandboxDesignGuide/AboutAppSandbox/AboutAppSandbox.html) (`sandbox-exec`) — real system binaries with OS-enforced write restrictions. Network access is blocked and writes are restricted to the current directory and `/tmp`.
+
+> **macOS only.** On Linux and Windows, the sandbox is unavailable and `infer` runs bash without restrictions (a warning is printed to stderr). Use `--no-sandbox` to suppress the warning and be explicit.
 
 ```bash
-infer "list files here"                   # sandboxed (default)
+infer "list files here"                   # sandboxed on macOS, unrestricted elsewhere
 infer --allow-network "fetch example.com" # enable network in sandbox
 infer --no-sandbox "unrestricted bash"    # bypass sandbox entirely
 ```
