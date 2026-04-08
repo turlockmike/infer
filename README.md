@@ -1,8 +1,7 @@
 # infer
 
-Pipe-friendly LLM agent harness with a bash tool. Works with any OpenAI-compatible provider.
+Pipe-friendly LLM agent harness — one tool: bash. Works with any OpenAI-compatible provider.
 
-![demo](demo.gif)
 
 ```bash
 infer "what directory am i in"
@@ -272,14 +271,16 @@ Thinking models (chain-of-thought) are handled automatically — reasoning block
 | Model family | Tool use | Notes |
 |---|---|---|
 | `gemma4` | ✅ | Works well; thinking blocks stripped automatically |
+| `qwen3.5` | ✅ | Thinking suppressed via `/no_think` + output stripping |
 | `qwen2.5` | ✅ | Works well |
 | `qwen3` | ✅ | Thinking suppressed via `/no_think` + output stripping |
-| `glm-5.1` | ✅ | Thinking blocks stripped automatically |
-| `nemotron-cascade-2` | ✅ | Thinking blocks stripped automatically |
+| `nemotron-cascade-2` | ✅ | Supports tools; may time out on slower GPUs |
 | `llama3.1+` | ✅ | Works well |
-| `phi4` | ✅ | Works well |
+| `phi4` | ⚠️ | Needs a tool-capable variant; check `ollama list` |
+| `deepseek-r1` | ⚠️ | Tool support varies by quantization; test your specific variant |
 | `lfm2` | ✅ | Works well |
-| `gemma3` | ❌ | Does not support tool use in Ollama — use `gemma4` instead |
+| `gemma3` | ❌ | Does not support tool use — use `gemma4` instead |
+| `llama3` | ❌ | No tool support — use `llama3.1` or newer |
 
 If you see `model 'X' does not support tool use`, switch to a different model or variant.
 
