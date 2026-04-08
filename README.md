@@ -2,7 +2,6 @@
 
 Pipe-friendly LLM agent harness with a bash tool. Works with any OpenAI-compatible provider.
 
-![demo](demo.gif)
 
 ```bash
 infer "what directory am i in"
