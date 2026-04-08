@@ -14,11 +14,12 @@
 
 import { describe, it, expect } from "bun:test";
 import { EventEmitter } from "events";
-import { run, runRepl } from "./infer";
+import { run, runRepl, loadConfig } from "./infer";
 
-const E2E_URL   = process.env.INFER_URL   ?? "http://localhost:11434/v1";
-const E2E_MODEL = process.env.INFER_MODEL ?? "gemma4:latest";
-const E2E_KEY   = process.env.INFER_KEY   ?? "ollama";
+const cfg = loadConfig();
+const E2E_URL   = process.env.INFER_URL   ?? cfg.url;
+const E2E_MODEL = process.env.INFER_MODEL ?? cfg.model;
+const E2E_KEY   = process.env.INFER_KEY   ?? cfg.api_key;
 
 async function isModelAvailable(): Promise<boolean> {
   try {
@@ -130,7 +131,7 @@ describe("E2E: streaming (TTY path)", () => {
     const origWrite = process.stdout.write.bind(process.stdout);
     (process.stdout as any).write = (chunk: string) => { chunks.push(chunk); return true; };
 
-    const { code } = await run({ ...OPTS, prompt: "Reply with only the word: pong" });
+    const { code } = await run({ ...OPTS, prompt: "Reply with only the word: pong", stream: true });
 
     (process.stdout as any).write = origWrite;
     Object.defineProperty(process.stdout, "isTTY", { value: undefined, configurable: true });
