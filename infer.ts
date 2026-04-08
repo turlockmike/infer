@@ -184,46 +184,73 @@ export async function run(opts: {
     { role: "user", content: prompt },
   ];
 
-  if (verbose) process.stderr.write(`model=${model} url=${url} sandbox=${sandbox}\n`);
+  const stream = !!process.stdout.isTTY && !jsonMode;
+  if (verbose) process.stderr.write(`model=${model} url=${url} sandbox=${sandbox} stream=${stream}\n`);
 
   for (let step = 1; step <= maxSteps; step++) {
-    const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
-    const msg = resp.choices[0].message;
+    let content = "";
+    let toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
 
-    if (msg.tool_calls?.length) {
-      for (const call of msg.tool_calls) {
-        const cmd = JSON.parse(call.function.arguments).command as string;
-        const output = await execBash(cmd, sandbox, allowNetwork, cwd);
-        if (verbose) { process.stderr.write(`+ ${cmd}\n`); process.stderr.write(`${output}\n`); }
-        messages.push(msg);
-        messages.push({ role: "tool", tool_call_id: call.id, content: output });
-      }
-    } else {
-      let content = msg.content ?? "";
-
-      if (jsonMode) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(content);
-        } catch (e: any) {
-          process.stderr.write(`infer: invalid JSON: ${e.message}\n`);
-          messages.push(msg);
-          messages.push({ role: "user", content: `Your response was not valid JSON. Error: ${e.message}\nYou returned: ${content}\nFix it and respond with valid JSON only. No markdown, no code fences, no explanation.` });
-          continue;
-        }
-        if (typeof jsonMode === "string") {
-          const err = validateShape(parsed, JSON.parse(jsonMode));
-          if (err) {
-            process.stderr.write(`infer: shape mismatch: ${err}\n`);
-            messages.push(msg);
-            messages.push({ role: "user", content: `Your response was invalid. Problem: ${err}\nYou returned: ${content}\nRequired shape: ${jsonMode}\nFix it and respond with valid JSON matching that shape exactly. Nothing else.` });
-            continue;
+    if (stream) {
+      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
+      for await (const chunk of resp) {
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            if (!toolCalls[tc.index]) toolCalls[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            if (tc.id) toolCalls[tc.index].id += tc.id;
+            if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
+            if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
           }
         }
       }
-
-      console.log(content);
+      if (content) process.stdout.write("\n");
+    } else {
+      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
+      const msg = resp.choices[0].message;
+      content = msg.content ?? "";
+      toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
       if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
+    }
+
+    if (toolCalls.length) {
+      if (stream && content) { /* already printed above */ }
+      const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content, tool_calls: toolCalls };
+      for (const call of toolCalls) {
+        const cmd = JSON.parse(call.function.arguments).command as string;
+        const output = await execBash(cmd, sandbox, allowNetwork, cwd);
+        if (verbose) { process.stderr.write(`+ ${cmd}\n`); process.stderr.write(`${output}\n`); }
+        messages.push(assistantMsg);
+        messages.push({ role: "tool", tool_call_id: call.id, content: output });
+      }
+    } else {
+      if (!stream) {
+
+        if (jsonMode) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(content);
+          } catch (e: any) {
+            process.stderr.write(`infer: invalid JSON: ${e.message}\n`);
+            const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content };
+            messages.push(assistantMsg);
+            messages.push({ role: "user", content: `Your response was not valid JSON. Error: ${e.message}\nYou returned: ${content}\nFix it and respond with valid JSON only. No markdown, no code fences, no explanation.` });
+            continue;
+          }
+          if (typeof jsonMode === "string") {
+            const err = validateShape(parsed, JSON.parse(jsonMode));
+            if (err) {
+              process.stderr.write(`infer: shape mismatch: ${err}\n`);
+              const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content };
+              messages.push(assistantMsg);
+              messages.push({ role: "user", content: `Your response was invalid. Problem: ${err}\nYou returned: ${content}\nRequired shape: ${jsonMode}\nFix it and respond with valid JSON matching that shape exactly. Nothing else.` });
+              continue;
+            }
+          }
+        }
+        console.log(content);
+      }
       return 0;
     }
   }
@@ -286,7 +313,7 @@ if (import.meta.main) {
     process.exit(1);
   }
 
-  const code = await run({
+  process.exitCode = await run({
     prompt,
     url:          values.url ?? cfg.url,
     model:        values.model ?? cfg.model,
@@ -297,6 +324,4 @@ if (import.meta.main) {
     sandbox:      !(values["no-sandbox"] ?? false),
     allowNetwork: values["allow-network"] ?? false,
   });
-
-  process.exit(code);
 }
