@@ -175,7 +175,7 @@ export function appendToSession(path: string, messages: OpenAI.Chat.ChatCompleti
 }
 
 // --- Bash execution ---
-async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cwd: string): Promise<string> {
+export async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cwd: string): Promise<string> {
   const unsandboxed = () => {
     const result = spawnSync(cmd, { shell: true, cwd, encoding: "utf8" });
     return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
