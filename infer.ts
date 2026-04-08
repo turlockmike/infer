@@ -43,6 +43,8 @@ const DEFAULT_SYSTEM = `You have one tool: bash. Use it when the task requires s
 
 Never claim you cannot reach an address, port, or service without first attempting it with bash. Always try with curl before saying anything is unreachable. This applies to local network addresses, private IPs, and LAN services — try curl first, report what actually happened.
 
+The user cannot see bash tool output — only your final text response is shown to them. Always include the relevant output, data, or findings directly in your response. Never say "I ran the command" without also reporting what it returned.
+
 Your final message is the output of this program — it will be printed to stdout and may be piped into other commands. Be concise and output only what was asked for. No preamble, no commentary.
 
 File conventions:
@@ -270,7 +272,8 @@ export async function run(opts: {
     } else {
       const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
       const msg = resp.choices[0].message;
-      content = msg.content ?? "";
+      // Some models (e.g. Gemma4) return reasoning in a non-standard field and leave content empty
+      content = msg.content || (msg as any).reasoning || "";
       toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
       if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
     }
@@ -286,6 +289,12 @@ export async function run(opts: {
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
       }
     } else {
+      // If content is empty with no tool calls, force a final response rather than returning nothing
+      if (!content && messages.some(m => m.role === "tool")) {
+        messages.push({ role: "user", content: "Please provide your response to the user based on the tool results above." });
+        continue;
+      }
+
       if (!content && !stream) process.stderr.write("infer: warning: model returned empty response\n");
 
       if (!stream) {
@@ -334,8 +343,9 @@ export async function runRepl(opts: {
   allowNetwork: boolean;
   stream?: boolean;
   session?: string;
+  _rl?: any; // injectable readline interface (for testing)
 }): Promise<void> {
-  const { url, model, apiKey, system, verbose, sandbox, allowNetwork, stream = false, session } = opts;
+  const { url, model, apiKey, system, verbose, sandbox, allowNetwork, stream = false, session, _rl } = opts;
   const cwd = process.cwd();
   const client = new OpenAI({ baseURL: url, apiKey });
 
@@ -345,7 +355,7 @@ export async function runRepl(opts: {
     ...priorMessages,
   ];
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = _rl ?? createInterface({ input: process.stdin, output: process.stdout });
   const sessionNote = session
     ? (priorMessages.length ? ` (${priorMessages.length} messages loaded from ${session})` : ` (new session: ${session})`)
     : "";
@@ -393,7 +403,7 @@ export async function runRepl(opts: {
       } else {
         const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
         const msg = resp.choices[0].message;
-        content = msg.content ?? "";
+        content = msg.content || (msg as any).reasoning || "";
         toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
         if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
       }
@@ -408,6 +418,11 @@ export async function runRepl(opts: {
           messages.push({ role: "tool", tool_call_id: call.id, content: output });
         }
       } else {
+        // Force a final response if content is empty after tool calls
+        if (!content && messages.some(m => m.role === "tool")) {
+          messages.push({ role: "user", content: "Please provide your response to the user based on the tool results above." });
+          continue;
+        }
         if (!stream) process.stdout.write(content + "\n");
         const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content };
         messages.push(assistantMsg);

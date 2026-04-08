@@ -1,22 +1,40 @@
 /**
  * E2E tests — hit a real LLM endpoint.
- * Not included in CI. Run manually:
+ * Tests are automatically skipped when the configured model is unreachable.
  *
+ * Run manually:
  *   bun test:e2e
  *   bun test infer.e2e.test.ts
  *
- * Requires a running OpenAI-compatible server. Configure via env:
+ * Configure via env:
  *   INFER_URL   (default: http://localhost:11434/v1)
  *   INFER_MODEL (default: gemma4:latest)
  *   INFER_KEY   (default: ollama)
  */
 
 import { describe, it, expect } from "bun:test";
+import { EventEmitter } from "events";
 import { run, runRepl } from "./infer";
 
 const E2E_URL   = process.env.INFER_URL   ?? "http://localhost:11434/v1";
 const E2E_MODEL = process.env.INFER_MODEL ?? "gemma4:latest";
 const E2E_KEY   = process.env.INFER_KEY   ?? "ollama";
+
+async function isModelAvailable(): Promise<boolean> {
+  try {
+    const resp = await fetch(`${E2E_URL}/models`, {
+      headers: { Authorization: `Bearer ${E2E_KEY}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json() as { data?: { id: string }[] };
+    return data.data?.some(m => m.id === E2E_MODEL) ?? false;
+  } catch {
+    return false;
+  }
+}
+
+const modelAvailable = await isModelAvailable();
 
 const OPTS = {
   url: E2E_URL, model: E2E_MODEL, apiKey: E2E_KEY,
@@ -26,11 +44,11 @@ const OPTS = {
 };
 
 describe("E2E: simple response (no tools)", () => {
-  it("answers a pure knowledge question", async () => {
+  it.skipIf(!modelAvailable)("answers a pure knowledge question", async () => {
     let output = "";
     const origLog = console.log;
     console.log = (s: string) => { output = s; };
-    const code = await run({ ...OPTS, prompt: "Reply with only the number: what is 7 multiplied by 6?" });
+    const { code } = await run({ ...OPTS, prompt: "Reply with only the number: what is 7 multiplied by 6?" });
     console.log = origLog;
     expect(code).toBe(0);
     expect(output).toContain("42");
@@ -38,23 +56,23 @@ describe("E2E: simple response (no tools)", () => {
 });
 
 describe("E2E: tool use (bash)", () => {
-  it("uses bash to answer a system question", async () => {
+  it.skipIf(!modelAvailable)("uses bash to answer a system question", async () => {
     let output = "";
     const origLog = console.log;
     console.log = (s: string) => { output = s; };
-    const code = await run({ ...OPTS, prompt: "Run: echo hello-e2e. Output only that result." });
+    const { code } = await run({ ...OPTS, prompt: "Run: echo hello-e2e. Output only that result." });
     console.log = origLog;
     expect(code).toBe(0);
     expect(output).toContain("hello-e2e");
   }, 30_000);
 
-  it("can read a file via bash and answer about it", async () => {
+  it.skipIf(!modelAvailable)("can read a file via bash and answer about it", async () => {
     const tmpFile = `/tmp/infer-e2e-${Date.now()}.txt`;
     await Bun.write(tmpFile, "the secret word is banana");
     let output = "";
     const origLog = console.log;
     console.log = (s: string) => { output = s; };
-    const code = await run({ ...OPTS, prompt: `Read ${tmpFile} and output only the secret word.` });
+    const { code } = await run({ ...OPTS, prompt: `Read ${tmpFile} and output only the secret word.` });
     console.log = origLog;
     expect(code).toBe(0);
     expect(output.toLowerCase()).toContain("banana");
@@ -62,21 +80,21 @@ describe("E2E: tool use (bash)", () => {
 });
 
 describe("E2E: JSON mode", () => {
-  it("returns valid JSON without shape", async () => {
+  it.skipIf(!modelAvailable)("returns valid JSON without shape", async () => {
     let output = "";
     const origLog = console.log;
     console.log = (s: string) => { output = s; };
-    const code = await run({ ...OPTS, prompt: "current working directory", jsonMode: true });
+    const { code } = await run({ ...OPTS, prompt: "current working directory", jsonMode: true });
     console.log = origLog;
     expect(code).toBe(0);
     expect(() => JSON.parse(output)).not.toThrow();
   }, 30_000);
 
-  it("returns JSON matching a shape", async () => {
+  it.skipIf(!modelAvailable)("returns JSON matching a shape", async () => {
     let output = "";
     const origLog = console.log;
     console.log = (s: string) => { output = s; };
-    const code = await run({
+    const { code } = await run({
       ...OPTS,
       prompt: "Run: echo hello. Put the result in the output field.",
       jsonMode: '{"output":""}',
@@ -88,11 +106,11 @@ describe("E2E: JSON mode", () => {
     expect(parsed.output).toContain("hello");
   }, 45_000);
 
-  it("returns a JSON array of strings", async () => {
+  it.skipIf(!modelAvailable)("returns a JSON array of strings", async () => {
     let output = "";
     const origLog = console.log;
     console.log = (s: string) => { output = s; };
-    const code = await run({
+    const { code } = await run({
       ...OPTS,
       prompt: 'Return exactly three colors as a JSON array: ["red","green","blue"]',
       jsonMode: '[""]',
@@ -106,13 +124,13 @@ describe("E2E: JSON mode", () => {
 });
 
 describe("E2E: streaming (TTY path)", () => {
-  it("produces output via streaming when stdout is TTY", async () => {
+  it.skipIf(!modelAvailable)("produces output via streaming when stdout is TTY", async () => {
     Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
     const chunks: string[] = [];
     const origWrite = process.stdout.write.bind(process.stdout);
     (process.stdout as any).write = (chunk: string) => { chunks.push(chunk); return true; };
 
-    const code = await run({ ...OPTS, prompt: "Reply with only the word: pong" });
+    const { code } = await run({ ...OPTS, prompt: "Reply with only the word: pong" });
 
     (process.stdout as any).write = origWrite;
     Object.defineProperty(process.stdout, "isTTY", { value: undefined, configurable: true });
@@ -124,15 +142,10 @@ describe("E2E: streaming (TTY path)", () => {
 });
 
 describe("E2E: repl", () => {
-  it("completes a multi-turn conversation", async () => {
+  it.skipIf(!modelAvailable)("completes a multi-turn conversation", async () => {
     const responses: string[] = [];
     const inputs = ["Reply with only the word: alpha", "Reply with only the word: beta", "exit"];
     let inputIdx = 0;
-
-    // Mock readline
-    const { createInterface } = await import("readline");
-    const origCreate = createInterface;
-    (globalThis as any).__rl_mock_inputs = inputs;
 
     Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
     const origWrite = process.stdout.write.bind(process.stdout);
@@ -143,23 +156,20 @@ describe("E2E: repl", () => {
       return true;
     };
 
-    // Stub createInterface to feed scripted inputs
-    const { EventEmitter } = await import("events");
+    // Inject fake rl directly — avoids readonly ES module patching issue
     const fakeRl = new EventEmitter() as any;
     fakeRl.question = (_prompt: string, cb: (ans: string) => void) => {
       const answer = inputs[inputIdx++] ?? "exit";
       setTimeout(() => cb(answer), 0);
     };
     fakeRl.close = () => {};
-    fakeRl.on = (event: string, cb: () => void) => { if (event !== "SIGINT") EventEmitter.prototype.on.call(fakeRl, event, cb); return fakeRl; };
+    fakeRl.on = (event: string, cb: () => void) => {
+      if (event !== "SIGINT") EventEmitter.prototype.on.call(fakeRl, event, cb);
+      return fakeRl;
+    };
 
-    const rlModule = await import("readline");
-    const origCI = rlModule.createInterface;
-    (rlModule as any).createInterface = () => fakeRl;
+    await runRepl({ ...OPTS, system: "Output only what was asked. No preamble.", _rl: fakeRl });
 
-    await runRepl({ ...OPTS, system: "Output only what was asked. No preamble." });
-
-    (rlModule as any).createInterface = origCI;
     (process.stdout as any).write = origWrite;
     Object.defineProperty(process.stdout, "isTTY", { value: undefined, configurable: true });
 
