@@ -33,4 +33,12 @@ else
   sudo chmod +x "$BIN"
 fi
 
-echo "Done. Run: infer config set url http://localhost:11434/v1"
+echo "Done."
+echo ""
+echo "Quick start:"
+echo "  export INFER_API_KEY=sk-...            # OpenAI"
+echo "  export INFER_URL=https://api.openai.com/v1"
+echo "  export INFER_MODEL=gpt-4o"
+echo ""
+echo "  infer \"what directory am i in\""
+echo "  cat crash.log | infer \"why did this fail\""

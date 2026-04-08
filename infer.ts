@@ -20,7 +20,7 @@ import { spawnSync } from "child_process";
 import { parseArgs } from "util";
 import { createInterface } from "readline";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 // --- Config paths ---
 const CONFIG_DIR    = join(homedir(), ".config", "infer");
@@ -67,7 +67,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [{
 }];
 
 // --- Config ---
-function loadConfig(): typeof DEFAULTS & { system: string } {
+export function loadConfig(): typeof DEFAULTS & { system: string } {
   let cfg = { ...DEFAULTS };
   const systemParts: string[] = [];
 
@@ -75,6 +75,11 @@ function loadConfig(): typeof DEFAULTS & { system: string } {
     if (existsSync(cfgPath)) Object.assign(cfg, JSON.parse(readFileSync(cfgPath, "utf8")));
     if (existsSync(sysPath)) systemParts.push(readFileSync(sysPath, "utf8").trim());
   }
+
+  // Env var overrides — INFER_URL, INFER_MODEL, INFER_API_KEY
+  if (process.env.INFER_URL)     cfg.url     = process.env.INFER_URL;
+  if (process.env.INFER_MODEL)   cfg.model   = process.env.INFER_MODEL;
+  if (process.env.INFER_API_KEY) cfg.api_key = process.env.INFER_API_KEY;
 
   return { ...cfg, system: systemParts.length ? systemParts.join("\n\n") : DEFAULT_SYSTEM };
 }
@@ -151,30 +156,48 @@ export function validateShape(data: unknown, shape: unknown): string | null {
 
 // --- Bash execution ---
 async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cwd: string): Promise<string> {
-  if (!sandbox || process.platform !== "darwin") {
-    if (sandbox && process.platform !== "darwin") {
-      process.stderr.write("infer: warning: sandbox requires macOS — running without sandbox\n");
-    }
+  const unsandboxed = () => {
     const result = spawnSync(cmd, { shell: true, cwd, encoding: "utf8" });
+    return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
+  };
+
+  if (!sandbox) return unsandboxed();
+
+  if (process.platform === "darwin") {
+    // macOS Seatbelt — real binaries, OS-enforced write restriction
+    const realCwd = spawnSync("realpath", [cwd], { encoding: "utf8" }).stdout.trim();
+    const profile = [
+      "(version 1)", "(allow default)",
+      allowNetwork ? "" : "(deny network*)",
+      "(deny file-write*)",
+      `(allow file-write* (subpath "/private/tmp"))`,
+      `(allow file-write* (subpath "${realCwd}"))`,
+    ].filter(Boolean).join("");
+    const result = spawnSync("sandbox-exec", ["-p", profile, "bash", "-c", cmd], { cwd, encoding: "utf8" });
     return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
   }
 
-  // sandbox-exec (macOS Seatbelt) — real binaries, OS-enforced write restriction
-  const realCwd = spawnSync("realpath", [cwd], { encoding: "utf8" }).stdout.trim();
-  const networkRule = allowNetwork ? "" : "(deny network*)";
-  const profile = [
-    "(version 1)",
-    "(allow default)",
-    networkRule,
-    "(deny file-write*)",
-    `(allow file-write* (subpath "/private/tmp"))`,
-    `(allow file-write* (subpath "${realCwd}"))`,
-  ].filter(Boolean).join("");
+  if (process.platform === "linux") {
+    // Linux: use bwrap (bubblewrap) if available
+    const bwrapBin = spawnSync("which", ["bwrap"], { encoding: "utf8" }).stdout.trim();
+    if (bwrapBin) {
+      const realCwd = spawnSync("realpath", [cwd], { encoding: "utf8" }).stdout.trim();
+      const args = [
+        "--ro-bind", "/", "/",
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--tmpfs", "/tmp",
+        "--bind", realCwd, realCwd,
+        ...(allowNetwork ? [] : ["--unshare-net"]),
+        "bash", "-c", cmd,
+      ];
+      const result = spawnSync("bwrap", args, { cwd, encoding: "utf8" });
+      return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
+    }
+  }
 
-  const result = spawnSync("sandbox-exec", ["-p", profile, "bash", "-c", cmd], {
-    cwd, encoding: "utf8",
-  });
-  return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
+  // Fallback: no sandbox available on this platform
+  return unsandboxed();
 }
 
 // --- Main agent loop ---
@@ -381,9 +404,9 @@ Usage:
   infer config <cmd>        manage config
 
 Options:
-  -m, --model MODEL         model name (default: gemma4:latest)
-  -u, --url URL             provider base URL (default: http://localhost:11434/v1)
-  -k, --api-key KEY         API key
+  -m, --model MODEL         model name (env: INFER_MODEL, default: gemma4:latest)
+  -u, --url URL             provider base URL (env: INFER_URL)
+  -k, --api-key KEY         API key (env: INFER_API_KEY)
   -s, --system TEXT         system prompt override
   -r, --role NAME           load role from ~/.config/infer/roles/<name>.md
   -f, --file FILE           file to use as context (prepended to prompt)
@@ -416,9 +439,11 @@ Examples:
 
   const isReplCmd = argv[0] === "repl";
   const cfg = loadConfig();
-  const hasConfig = existsSync(GLOBAL_CONFIG) || existsSync(LOCAL_CONFIG);
+  const hasConfig = existsSync(GLOBAL_CONFIG) || existsSync(LOCAL_CONFIG)
+    || !!(process.env.INFER_URL || process.env.INFER_MODEL || process.env.INFER_API_KEY);
   if (!hasConfig) {
-    process.stderr.write("infer: no config found. Run:\n");
+    process.stderr.write("infer: no config found. Set env vars or run:\n");
+    process.stderr.write("  export INFER_API_KEY=sk-...   # or INFER_URL / INFER_MODEL\n\n");
     process.stderr.write("  infer config set url http://localhost:11434/v1\n");
     process.stderr.write("  infer config set model gemma4:latest\n");
     process.stderr.write("  infer config set api_key ollama\n\n");
