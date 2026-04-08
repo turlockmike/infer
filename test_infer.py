@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for infer — tests logic without hitting Ollama."""
 
-import json, sys, tempfile, unittest
+import argparse, json, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -55,6 +55,51 @@ class TestValidateShape(unittest.TestCase):
         self.assertIsNone(infer_mod.validate_shape({"user": {"name": "bob", "score": 99}}, shape))
         err = infer_mod.validate_shape({"user": {"name": "bob"}}, shape)
         self.assertIn("score", err)
+
+
+class TestConfig(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.tmp.name) / "config.json"
+        self.patcher = patch.object(infer_mod, "GLOBAL_CONFIG", self.config_path)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.tmp.cleanup()
+
+    def _run_config(self, *args):
+        p = argparse.ArgumentParser(prog="infer config")
+        sub = p.add_subparsers(dest="config_cmd")
+        sub.add_parser("show")
+        g = sub.add_parser("get");   g.add_argument("key")
+        s = sub.add_parser("set");   s.add_argument("key"); s.add_argument("value")
+        u = sub.add_parser("unset"); u.add_argument("key")
+        infer_mod.cmd_config(p.parse_args(list(args)))
+
+    def test_set_and_get(self):
+        self._run_config("set", "model", "qwen3:latest")
+        cfg = json.loads(self.config_path.read_text())
+        self.assertEqual(cfg["model"], "qwen3:latest")
+
+    def test_show_merges_defaults(self):
+        self._run_config("set", "model", "qwen3:latest")
+        with patch("builtins.print") as mock_print:
+            self._run_config("show")
+        output = {line.args[0].split("=")[0]: line.args[0].split("=")[1]
+                  for line in mock_print.call_args_list}
+        self.assertEqual(output["model"], "qwen3:latest")
+        self.assertIn("url", output)
+
+    def test_unset(self):
+        self._run_config("set", "model", "qwen3:latest")
+        self._run_config("unset", "model")
+        cfg = json.loads(self.config_path.read_text())
+        self.assertNotIn("model", cfg)
+
+    def test_invalid_key_exits(self):
+        with self.assertRaises(SystemExit):
+            self._run_config("set", "invalid_key", "value")
 
 
 class TestLoadRole(unittest.TestCase):

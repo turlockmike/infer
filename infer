@@ -165,26 +165,73 @@ def run(prompt: str, url: str, model: str, api_key: str, system: str, verbose: b
     return 1
 
 
+VALID_KEYS = {"url", "model", "api_key"}
+
+def cmd_config(args):
+    GLOBAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    current = json.loads(GLOBAL_CONFIG.read_text()) if GLOBAL_CONFIG.exists() else {}
+
+    if args.config_cmd == "show":
+        merged = {**DEFAULTS, **current}
+        for k, v in merged.items():
+            print(f"{k}={v}")
+
+    elif args.config_cmd == "get":
+        if args.key not in VALID_KEYS:
+            print(f"infer config: unknown key '{args.key}'. Valid: {', '.join(VALID_KEYS)}", file=sys.stderr)
+            sys.exit(1)
+        merged = {**DEFAULTS, **current}
+        print(merged.get(args.key, ""))
+
+    elif args.config_cmd == "set":
+        if args.key not in VALID_KEYS:
+            print(f"infer config: unknown key '{args.key}'. Valid: {', '.join(VALID_KEYS)}", file=sys.stderr)
+            sys.exit(1)
+        current[args.key] = args.value
+        GLOBAL_CONFIG.write_text(json.dumps(current, indent=2))
+        print(f"{args.key}={args.value}")
+
+    elif args.config_cmd == "unset":
+        if args.key in current:
+            del current[args.key]
+            GLOBAL_CONFIG.write_text(json.dumps(current, indent=2))
+        print(f"unset {args.key}")
+
+    else:
+        print("usage: infer config <show|get|set|unset> [key] [value]")
+        sys.exit(1)
+
+
 def check_config():
     """Warn on first run if no config exists."""
-    has_global = GLOBAL_CONFIG.exists()
-    has_local  = LOCAL_CONFIG.exists()
-    if not has_global and not has_local:
-        print("infer: no config found. Create ~/.config/infer/config.json to set defaults:", file=sys.stderr)
-        print('  mkdir -p ~/.config/infer', file=sys.stderr)
-        print('  echo \'{"url":"http://localhost:11434/v1","model":"gemma4:latest","api_key":"ollama"}\' > ~/.config/infer/config.json', file=sys.stderr)
+    if not GLOBAL_CONFIG.exists() and not LOCAL_CONFIG.exists():
+        print("infer: no config found. Run:", file=sys.stderr)
+        print("  infer config set url http://localhost:11434/v1", file=sys.stderr)
+        print("  infer config set model gemma4:latest", file=sys.stderr)
+        print("  infer config set api_key ollama", file=sys.stderr)
         print("", file=sys.stderr)
         print("  Common providers:", file=sys.stderr)
-        print('    Ollama:     url=http://localhost:11434/v1  api_key=ollama', file=sys.stderr)
-        print('    Groq:       url=https://api.groq.com/openai/v1  api_key=$GROQ_API_KEY', file=sys.stderr)
-        print('    OpenRouter: url=https://openrouter.ai/api/v1  api_key=$OPENROUTER_API_KEY', file=sys.stderr)
-        print('    OpenAI:     url=https://api.openai.com/v1  api_key=$OPENAI_API_KEY', file=sys.stderr)
+        print("    Ollama:     url=http://localhost:11434/v1      api_key=ollama", file=sys.stderr)
+        print("    Groq:       url=https://api.groq.com/openai/v1  api_key=<key>", file=sys.stderr)
+        print("    OpenRouter: url=https://openrouter.ai/api/v1    api_key=<key>", file=sys.stderr)
+        print("    OpenAI:     url=https://api.openai.com/v1       api_key=<key>", file=sys.stderr)
         print("", file=sys.stderr)
         print("  Proceeding with built-in defaults...", file=sys.stderr)
         print("", file=sys.stderr)
 
 
 if __name__ == "__main__":
+    # Route config subcommand before loading config
+    if len(sys.argv) > 1 and sys.argv[1] == "config":
+        p = argparse.ArgumentParser(prog="infer config")
+        sub = p.add_subparsers(dest="config_cmd")
+        sub.add_parser("show")
+        g = sub.add_parser("get");   g.add_argument("key")
+        s = sub.add_parser("set");   s.add_argument("key"); s.add_argument("value")
+        u = sub.add_parser("unset"); u.add_argument("key")
+        cmd_config(p.parse_args(sys.argv[2:]))
+        sys.exit(0)
+
     check_config()
     cfg = load_config()
 
