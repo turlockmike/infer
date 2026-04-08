@@ -158,10 +158,16 @@ export function validateShape(data: unknown, shape: unknown): string | null {
   return null;
 }
 
-// Strip <think>...</think> blocks that some models (e.g. qwen3) emit as chain-of-thought.
-// /no_think in the system prompt suppresses this for qwen3, but we strip defensively too.
+// Strip chain-of-thought blocks that thinking models emit before their final response.
+// Most open-source thinking models (DeepSeek-R1, Qwen3, GLM-Z1/5.1, nemotron-cascade)
+// adopted <think>...</think>. A few use the longer <thinking> variant.
+// /no_think in the system prompt suppresses generation for qwen3/GLM; stripping is
+// a defensive fallback for models that ignore it or use custom suppression tokens.
 function stripThinking(content: string): string {
-  return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return content
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .trim();
 }
 
 // --- Session (JSONL) ---

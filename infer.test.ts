@@ -105,6 +105,55 @@ const BASE_OPTS = {
   verbose: false, jsonMode: false as const, sandbox: false, allowNetwork: false,
 };
 
+// --- thinking block stripping ---
+describe("thinking block stripping", () => {
+  beforeEach(() => mockCreate.mockClear());
+
+  it("strips <think>...</think> blocks from response (qwen3/DeepSeek style)", async () => {
+    let output = "";
+    const origLog = console.log;
+    console.log = (s: string) => { output = s; };
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "<think>\nsome chain of thought\n</think>\nParis", tool_calls: null } }],
+      usage: { completion_tokens: 10, prompt_tokens: 20 },
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "capital of France?" });
+    console.log = origLog;
+    expect(code).toBe(0);
+    expect(output).toBe("Paris");
+    expect(output).not.toContain("<think>");
+  });
+
+  it("strips <thinking>...</thinking> blocks (GLM/nemotron style)", async () => {
+    let output = "";
+    const origLog = console.log;
+    console.log = (s: string) => { output = s; };
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "<thinking>\nlong reasoning here\n</thinking>\n42", tool_calls: null } }],
+      usage: { completion_tokens: 10, prompt_tokens: 20 },
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "7 * 6?" });
+    console.log = origLog;
+    expect(code).toBe(0);
+    expect(output).toBe("42");
+    expect(output).not.toContain("<thinking>");
+  });
+
+  it("passes through responses with no thinking blocks unchanged", async () => {
+    let output = "";
+    const origLog = console.log;
+    console.log = (s: string) => { output = s; };
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "plain answer", tool_calls: null } }],
+      usage: { completion_tokens: 2, prompt_tokens: 10 },
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "test" });
+    console.log = origLog;
+    expect(code).toBe(0);
+    expect(output).toBe("plain answer");
+  });
+});
+
 // --- run() non-streaming ---
 describe("run() non-streaming", () => {
   beforeEach(() => mockCreate.mockClear());

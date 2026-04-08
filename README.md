@@ -267,14 +267,18 @@ infer -r coder "write a fizzbuzz in python"
 ## Model Compatibility
 
 infer requires a model that supports **tool use** (function calling). Not all models do.
+Thinking models (chain-of-thought) are handled automatically — reasoning blocks are stripped from output.
 
 | Model family | Tool use | Notes |
 |---|---|---|
-| `gemma4` | ✅ | Works well |
+| `gemma4` | ✅ | Works well; thinking blocks stripped automatically |
 | `qwen2.5` | ✅ | Works well |
+| `qwen3` | ✅ | Thinking suppressed via `/no_think` + output stripping |
+| `glm-5.1` | ✅ | Thinking blocks stripped automatically |
+| `nemotron-cascade-2` | ✅ | Thinking blocks stripped automatically |
 | `llama3.1+` | ✅ | Works well |
 | `phi4` | ✅ | Works well |
-| `qwen3` | ✅ | Chain-of-thought mode suppressed automatically via `/no_think` in system prompt |
+| `lfm2` | ✅ | Works well |
 | `gemma3` | ❌ | Does not support tool use in Ollama — use `gemma4` instead |
 
 If you see `model 'X' does not support tool use`, switch to a different model or variant.
