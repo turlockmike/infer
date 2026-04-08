@@ -12,7 +12,6 @@
  *   infer --no-sandbox "unrestricted bash"
  */
 
-import { Bash, MountableFs, InMemoryFs, ReadWriteFs } from "just-bash";
 import OpenAI from "openai";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -152,19 +151,29 @@ export function validateShape(data: unknown, shape: unknown): string | null {
 
 // --- Bash execution ---
 async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cwd: string): Promise<string> {
-  if (!sandbox || allowNetwork) {
+  if (!sandbox || process.platform !== "darwin") {
+    if (sandbox && process.platform !== "darwin") {
+      process.stderr.write("infer: warning: sandbox requires macOS — running without sandbox\n");
+    }
     const result = spawnSync(cmd, { shell: true, cwd, encoding: "utf8" });
     return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
   }
 
-  const fs = new MountableFs({ base: new InMemoryFs() });
-  fs.mount(cwd, new ReadWriteFs({ root: cwd }));
-  fs.mount("/tmp", new ReadWriteFs({ root: "/tmp" }));
+  // sandbox-exec (macOS Seatbelt) — real binaries, OS-enforced write restriction
+  const realCwd = spawnSync("realpath", [cwd], { encoding: "utf8" }).stdout.trim();
+  const networkRule = allowNetwork ? "" : "(deny network*)";
+  const profile = [
+    "(version 1)",
+    "(allow default)",
+    networkRule,
+    "(deny file-write*)",
+    `(allow file-write* (subpath "/private/tmp"))`,
+    `(allow file-write* (subpath "${realCwd}"))`,
+  ].filter(Boolean).join("");
 
-  const networkOpts = allowNetwork ? { dangerouslyAllowFullInternetAccess: true } : undefined;
-  const bash = new Bash({ fs, cwd, ...(networkOpts ? { network: networkOpts } : {}) });
-
-  const result = await bash.exec(cmd);
+  const result = spawnSync("sandbox-exec", ["-p", profile, "bash", "-c", cmd], {
+    cwd, encoding: "utf8",
+  });
   return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
 }
 
