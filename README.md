@@ -111,62 +111,60 @@ infer has one tool: bash. Remote services are just CLI commands.
 **Existing CLIs work directly:**
 
 ```bash
-# Summarize a pull request
-gh pr view 42 | infer "what's the risk level of this change?"
-
-# Explain recent commits
+# Summarize recent commits
 git log --oneline -20 | infer "summarize what changed this week"
 
-# Diagnose cloud resources
-aws ec2 describe-instances | infer "which instances are unhealthy and why?"
+# One-liner per merged PR
+gh pr list --state merged --limit 10 --json number,title,mergedAt | infer "one sentence per PR"
+
+# Review a PR diff
+gh pr diff 42 | infer "what's the risk level of this change?"
 ```
 
 **No CLI? Use [murl](https://github.com/turlockmike/murl) — curl for MCP servers:**
 
 ```bash
-# Call any MCP server tool from bash
-murl https://mcp.example.com/tools/search -d query="auth bug" | infer "root cause?"
+# List tools on DeepWiki (GitHub repo documentation, no auth required)
+murl https://mcp.deepwiki.com/mcp/tools | infer "what can this service do?"
 
-# Explore what a server can do
-murl https://mcp.example.com/tools | infer "what does this service expose?"
-
-# Chain tools
-murl https://mcp.example.com/tools/get-pr -d id=42 | infer "is this safe to merge?"
+# Read the architecture of any repo indexed on deepwiki.com
+murl https://mcp.deepwiki.com/mcp/tools/read_wiki_structure \
+  -d repoName=langchain-ai/langchain | infer "what are the main sections?"
 ```
 
-murl outputs NDJSON — infer reads it via stdin, pipes clean.
+The same pattern works for any MCP server: `murl <server>/tools/<name> -d key=value | infer "..."`. The public MCP ecosystem is growing — find servers at [glama.ai/mcp/servers](https://glama.ai/mcp/servers).
 
 ## Prompts as Files
 
-A prompt is just a file. Use `-f` to pass context, `-s` to override the system prompt:
+A prompt is just a file. Use `-s` to set the system prompt from a file:
 
 ```bash
-# Use a saved prompt as context
-infer -f prompts/code-review.md < src/auth.py
-
-# Use a saved prompt as the system prompt
 infer -s "$(cat prompts/security-reviewer.md)" < src/auth.py
 ```
 
-**Skills are just a prompt file + a bin script:**
+**Skills are a prompt file + a one-line bin script:**
 
 ```bash
-# ~/.config/infer/prompts/review.md
+# 1. Write the prompt
+mkdir -p ~/.config/infer/prompts
+cat > ~/.config/infer/prompts/review.md << 'EOF'
 You are a senior engineer doing a code review. Focus on: correctness, security, and performance.
 Flag anything that could fail in production. Be direct. No praise.
-```
+EOF
 
-```bash
-# ~/bin/review  (chmod +x)
+# 2. Write the script
+cat > ~/bin/review << 'EOF'
 #!/bin/bash
 infer -s "$(cat ~/.config/infer/prompts/review.md)" "$@"
+EOF
+chmod +x ~/bin/review
 ```
 
 ```bash
-# Now it's just a command
-review < src/auth.py
-cat src/*.py | review "focus on the auth module"
+# Now use it anywhere
+cat src/auth.py | review
 gh pr diff 42 | review "is this safe to merge?"
+git diff HEAD~1 | review "any regressions?"
 ```
 
 No framework. No config. Prompts are text, skills are scripts, remote services are CLIs.
