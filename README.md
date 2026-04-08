@@ -34,11 +34,14 @@ infer [OPTIONS] [PROMPT]
   -m MODEL          Model name (default: gemma4:latest)
   -u URL            Provider base URL (default: http://localhost:11434/v1)
   -k KEY            API key (default: "ollama" for local providers)
+  -s TEXT           System prompt override
   -r ROLE           Named role — loads ~/.config/infer/roles/<name>.md
   -f FILE           File to use as context (prepended to prompt)
   -j [SHAPE]        Output JSON, optionally validated against a shape
+  -n N              Max tool-call iterations per run (default: 10)
   -v                Verbose — show tool calls and token stats on stderr
-  --no-sandbox      Use real bash (default: sandboxed via just-bash)
+  --stream          Stream tokens as they arrive (default: off)
+  --no-sandbox      Use real bash (default: sandboxed via sandbox-exec)
   --allow-network   Enable network access inside the sandbox
 ```
 
