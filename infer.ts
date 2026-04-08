@@ -13,7 +13,7 @@
  */
 
 import OpenAI from "openai";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
@@ -154,6 +154,24 @@ export function validateShape(data: unknown, shape: unknown): string | null {
   return null;
 }
 
+// --- Session (JSONL) ---
+// System message is config, not conversation — excluded from session files.
+// Each line is a full OpenAI message object: {"role":"user","content":"..."} etc.
+
+export function loadSession(path: string): OpenAI.Chat.ChatCompletionMessageParam[] {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map(l => JSON.parse(l) as OpenAI.Chat.ChatCompletionMessageParam)
+    .filter(m => m.role !== "system");
+}
+
+export function appendToSession(path: string, messages: OpenAI.Chat.ChatCompletionMessageParam[]) {
+  const lines = messages.map(m => JSON.stringify(m)).join("\n") + "\n";
+  appendFileSync(path, lines, "utf8");
+}
+
 // --- Bash execution ---
 async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cwd: string): Promise<string> {
   const unsandboxed = () => {
@@ -213,14 +231,18 @@ export async function run(opts: {
   allowNetwork: boolean;
   stream?: boolean;
   maxSteps?: number;
-}): Promise<number> {
-  const { prompt, url, model, apiKey, system, verbose, jsonMode, sandbox, allowNetwork, maxSteps = 10 } = opts;
+  initialMessages?: OpenAI.Chat.ChatCompletionMessageParam[];
+}): Promise<{ code: number; messages: OpenAI.Chat.ChatCompletionMessageParam[] }> {
+  const { prompt, url, model, apiKey, system, verbose, jsonMode, sandbox, allowNetwork, maxSteps = 10, initialMessages } = opts;
   const cwd = process.cwd();
   const client = new OpenAI({ baseURL: url, apiKey });
+  // Prior session messages (no system) + fresh system prepended + new user turn appended
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: system },
+    ...(initialMessages ?? []),
     { role: "user", content: prompt },
   ];
+  const sessionStart = 1 + (initialMessages?.length ?? 0); // index of new user message
 
   const stream = (opts.stream ?? false) && !jsonMode;
   if (verbose) process.stderr.write(`model=${model} url=${url} sandbox=${sandbox} stream=${stream}\n`);
@@ -292,12 +314,13 @@ export async function run(opts: {
         }
         console.log(content);
       }
-      return 0;
+      messages.push({ role: "assistant", content });
+      return { code: 0, messages };
     }
   }
 
   process.stderr.write("infer: max steps reached\n");
-  return 1;
+  return { code: 1, messages };
 }
 
 // --- REPL ---
@@ -310,16 +333,23 @@ export async function runRepl(opts: {
   sandbox: boolean;
   allowNetwork: boolean;
   stream?: boolean;
+  session?: string;
 }): Promise<void> {
-  const { url, model, apiKey, system, verbose, sandbox, allowNetwork, stream = false } = opts;
+  const { url, model, apiKey, system, verbose, sandbox, allowNetwork, stream = false, session } = opts;
   const cwd = process.cwd();
   const client = new OpenAI({ baseURL: url, apiKey });
+
+  const priorMessages = session ? loadSession(session) : [];
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: system },
+    ...priorMessages,
   ];
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  process.stdout.write(`infer repl  ${model}  Ctrl+C or 'exit' to quit\n\n`);
+  const sessionNote = session
+    ? (priorMessages.length ? ` (${priorMessages.length} messages loaded from ${session})` : ` (new session: ${session})`)
+    : "";
+  process.stdout.write(`infer repl  ${model}${sessionNote}  Ctrl+C or 'exit' to quit\n\n`);
 
   const readLine = () => new Promise<string | null>((resolve) => {
     rl.question("> ", resolve);
@@ -334,6 +364,7 @@ export async function runRepl(opts: {
     if (!input.trim()) continue;
 
     messages.push({ role: "user", content: input });
+    const turnStart = messages.length - 1; // index of this turn's user message
 
     let replied = false;
     while (!replied) {
@@ -374,7 +405,10 @@ export async function runRepl(opts: {
         }
       } else {
         if (!stream) process.stdout.write(content + "\n");
-        messages.push({ role: "assistant", content });
+        const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content };
+        messages.push(assistantMsg);
+        // Persist this turn: user message + any tool call pairs + final assistant
+        if (session) appendToSession(session, messages.slice(turnStart));
         replied = true;
       }
     }
@@ -411,6 +445,7 @@ Options:
   -r, --role NAME           load role from ~/.config/infer/roles/<name>.md
   -f, --file FILE           file to use as context (prepended to prompt)
   -j, --json [SHAPE]        output JSON, optionally validated against a shape
+  -S, --session FILE        JSONL session file — load prior turns, append this turn
   -n, --max-steps N         max tool-call iterations per run (default: 10)
   -v, --verbose             show tool calls and token stats on stderr
       --stream              stream tokens as they arrive (default: off)
@@ -431,7 +466,9 @@ Examples:
   infer -f main.py "explain this"
   infer -j '{"name":"string","pid":0}' "current process info"
   infer --stream "write a poem"
-  infer repl`);
+  infer repl
+  infer -S /tmp/s.jsonl "first question"
+  infer -S /tmp/s.jsonl "follow-up question"`);
     process.exit(0);
   }
 
@@ -460,6 +497,7 @@ Examples:
       role:          { type: "string",  short: "r" },
       file:          { type: "string",  short: "f" },
       json:          { type: "string",  short: "j" },
+      session:       { type: "string",  short: "S" },
       verbose:       { type: "boolean", short: "v", default: false },
       stream:        { type: "boolean", default: false },
       "no-sandbox":  { type: "boolean", default: false },
@@ -502,26 +540,39 @@ Examples:
       stream:       values.stream ?? false,
       sandbox:      !(values["no-sandbox"] ?? false),
       allowNetwork: values["allow-network"] ?? false,
+      session:      values.session,
     });
     process.exit(0);
   }
 
   if (!prompt) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
     process.exit(1);
   }
 
-  process.exitCode = await run({
+  const sessionFile = values.session;
+  const initialMessages = sessionFile ? loadSession(sessionFile) : undefined;
+
+  const { code, messages: resultMessages } = await run({
     prompt,
-    url:          values.url ?? cfg.url,
-    model:        values.model ?? cfg.model,
-    apiKey:       values["api-key"] ?? cfg.api_key,
+    url:             values.url ?? cfg.url,
+    model:           values.model ?? cfg.model,
+    apiKey:          values["api-key"] ?? cfg.api_key,
     system,
-    verbose:      values.verbose ?? false,
-    stream:       values.stream ?? false,
+    verbose:         values.verbose ?? false,
+    stream:          values.stream ?? false,
     jsonMode,
-    sandbox:      !(values["no-sandbox"] ?? false),
-    allowNetwork: values["allow-network"] ?? false,
-    maxSteps:     parseInt(values["max-steps"] ?? "10", 10),
+    sandbox:         !(values["no-sandbox"] ?? false),
+    allowNetwork:    values["allow-network"] ?? false,
+    maxSteps:        parseInt(values["max-steps"] ?? "10", 10),
+    initialMessages,
   });
+
+  if (sessionFile) {
+    // Append only the new messages from this turn (skip system + prior session messages)
+    const newMessages = resultMessages.slice(1 + (initialMessages?.length ?? 0));
+    appendToSession(sessionFile, newMessages);
+  }
+
+  process.exitCode = code;
 }

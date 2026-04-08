@@ -84,6 +84,38 @@ cat logs.txt | infer "summarize the errors"
 infer -f config.yaml "is this valid?"
 ```
 
+## Sessions
+
+Use `-S FILE` to persist a conversation across invocations. The file is JSONL — one message per line, human-readable, appendable with standard tools.
+
+```bash
+# Start a session
+infer -S /tmp/review.jsonl "here is the file" < src/auth.py
+
+# Do something programmatic between turns
+issues=$(run_linter src/auth.py)
+
+# Continue the same conversation
+echo "$issues" | infer -S /tmp/review.jsonl "the linter found these issues — which ones matter?"
+
+# One more turn
+infer -S /tmp/review.jsonl "now write the fix for the most critical one"
+```
+
+Sessions also work in REPL mode — load an existing conversation and continue interactively:
+
+```bash
+infer -S /tmp/review.jsonl repl
+# infer repl  gemma4:latest  (6 messages loaded from /tmp/review.jsonl)
+```
+
+The session file is plain JSONL. Inspect, fork, or edit it with standard tools:
+
+```bash
+jq '.role + ": " + .content' /tmp/review.jsonl   # read conversation
+cp /tmp/review.jsonl /tmp/review-fork.jsonl       # branch from this point
+```
+
 ## Sandbox
 
 By default, bash commands run in a sandbox — real system binaries with OS-enforced write restrictions. Network access is blocked and writes are restricted to the current directory and `/tmp`.
