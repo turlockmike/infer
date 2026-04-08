@@ -42,6 +42,8 @@ const DEFAULTS = {
 
 const DEFAULT_SYSTEM = `You have one tool: bash. Use it when the task requires system access — reading files, running commands, checking state. Answer directly when no system access is needed.
 
+Do not say you lack internet access or can't get live data — use bash with curl to fetch it.
+
 Your final message is the output of this program — it will be printed to stdout and may be piped into other commands. Be concise and output only what was asked for. No preamble, no commentary.
 
 File conventions:
@@ -150,7 +152,7 @@ export function validateShape(data: unknown, shape: unknown): string | null {
 
 // --- Bash execution ---
 async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cwd: string): Promise<string> {
-  if (!sandbox) {
+  if (!sandbox || allowNetwork) {
     const result = spawnSync(cmd, { shell: true, cwd, encoding: "utf8" });
     return ((result.stdout ?? "") + (result.stderr ?? "")).trim() || "(no output)";
   }
@@ -159,7 +161,7 @@ async function execBash(cmd: string, sandbox: boolean, allowNetwork: boolean, cw
   fs.mount(cwd, new ReadWriteFs({ root: cwd }));
   fs.mount("/tmp", new ReadWriteFs({ root: "/tmp" }));
 
-  const networkOpts = allowNetwork ? { allowedUrlPrefixes: [""] } : undefined;
+  const networkOpts = allowNetwork ? { dangerouslyAllowFullInternetAccess: true } : undefined;
   const bash = new Bash({ fs, cwd, ...(networkOpts ? { network: networkOpts } : {}) });
 
   const result = await bash.exec(cmd);
