@@ -222,7 +222,7 @@ export async function run(opts: {
         }
       }
 
-      process.stdout.write(content + "\n");
+      console.log(content);
       if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
       return 0;
     }
