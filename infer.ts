@@ -19,6 +19,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { parseArgs } from "util";
+import { createInterface } from "readline";
 
 // --- Config paths ---
 const CONFIG_DIR    = join(homedir(), ".config", "infer");
@@ -259,12 +260,88 @@ export async function run(opts: {
   return 1;
 }
 
+// --- REPL ---
+export async function runRepl(opts: {
+  url: string;
+  model: string;
+  apiKey: string;
+  system: string;
+  verbose: boolean;
+  sandbox: boolean;
+  allowNetwork: boolean;
+}): Promise<void> {
+  const { url, model, apiKey, system, verbose, sandbox, allowNetwork } = opts;
+  const cwd = process.cwd();
+  const client = new OpenAI({ baseURL: url, apiKey });
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: system },
+  ];
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  process.stdout.write(`infer repl  ${model}  Ctrl+C or 'exit' to quit\n\n`);
+
+  const readLine = () => new Promise<string | null>((resolve) => {
+    rl.question("> ", resolve);
+    rl.once("close", () => resolve(null));
+  });
+
+  rl.on("SIGINT", () => { process.stdout.write("\n"); rl.close(); });
+
+  while (true) {
+    const input = await readLine();
+    if (input === null || input.trim() === "exit" || input.trim() === "quit") break;
+    if (!input.trim()) continue;
+
+    messages.push({ role: "user", content: input });
+
+    let replied = false;
+    while (!replied) {
+      let content = "";
+      let toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
+
+      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
+      for await (const chunk of resp) {
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            if (!toolCalls[tc.index]) toolCalls[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            if (tc.id) toolCalls[tc.index].id += tc.id;
+            if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
+            if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
+          }
+        }
+      }
+      if (content) process.stdout.write("\n");
+
+      if (toolCalls.length) {
+        const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content, tool_calls: toolCalls };
+        messages.push(assistantMsg);
+        for (const call of toolCalls) {
+          const cmd = JSON.parse(call.function.arguments).command as string;
+          const output = await execBash(cmd, sandbox, allowNetwork, cwd);
+          if (verbose) { process.stderr.write(`+ ${cmd}\n`); process.stderr.write(`${output}\n`); }
+          messages.push({ role: "tool", tool_call_id: call.id, content: output });
+        }
+      } else {
+        messages.push({ role: "assistant", content });
+        replied = true;
+      }
+    }
+
+    process.stdout.write("\n");
+  }
+
+  rl.close();
+}
+
 // --- Entry point ---
 if (import.meta.main) {
   const argv = process.argv.slice(2);
 
   if (argv[0] === "config") { runConfigCmd(argv.slice(1)); process.exit(0); }
 
+  const isReplCmd = argv[0] === "repl";
   const cfg = loadConfig();
   const hasConfig = existsSync(GLOBAL_CONFIG) || existsSync(LOCAL_CONFIG);
   if (!hasConfig) {
@@ -276,7 +353,7 @@ if (import.meta.main) {
   }
 
   const { values, positionals } = parseArgs({
-    args: argv,
+    args: isReplCmd ? argv.slice(1) : argv,
     options: {
       model:         { type: "string",  short: "m", default: cfg.model },
       url:           { type: "string",  short: "u", default: cfg.url },
@@ -308,8 +385,23 @@ if (import.meta.main) {
   const promptArg    = positionals.join(" ");
   const prompt       = context && promptArg ? `${context}\n\n${promptArg}` : context || promptArg;
 
+  const replMode = isReplCmd || (!prompt && !!process.stdin.isTTY);
+
+  if (replMode) {
+    await runRepl({
+      url:          values.url ?? cfg.url,
+      model:        values.model ?? cfg.model,
+      apiKey:       values["api-key"] ?? cfg.api_key,
+      system,
+      verbose:      values.verbose ?? false,
+      sandbox:      !(values["no-sandbox"] ?? false),
+      allowNetwork: values["allow-network"] ?? false,
+    });
+    process.exit(0);
+  }
+
   if (!prompt) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -v\n  --no-sandbox  --allow-network\n  config show|get|set|unset");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -v\n  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
     process.exit(1);
   }
 
