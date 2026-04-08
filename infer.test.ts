@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
 import { validateShape, run } from "./infer";
 
 // --- validateShape ---
@@ -23,9 +23,23 @@ describe("validateShape", () => {
     expect(validateShape({ user: { name: "bob", score: 99 } }, shape)).toBeNull();
     expect(validateShape({ user: { name: "bob" } }, shape)).toContain("score");
   });
+
+  it("empty object shape accepts any object", () => expect(validateShape({ anything: 1 }, {})).toBeNull());
+  it("empty array shape accepts any array", () => expect(validateShape([1, 2, 3], [])).toBeNull());
+  it("null shape returns null", () => expect(validateShape(null, null)).toBeNull());
+  it("array of objects", () => {
+    const shape = [{ name: "", score: 0 }];
+    expect(validateShape([{ name: "a", score: 1 }], shape)).toBeNull();
+    expect(validateShape([{ name: "a" }], shape)).toContain("[0]");
+  });
 });
 
-// --- run() ---
+// --- Mocks ---
+
+async function* makeStream(chunks: object[]) {
+  for (const chunk of chunks) yield chunk;
+}
+
 const mockCreate = mock(() => Promise.resolve({
   choices: [{ message: { content: "Paris", tool_calls: null } }],
   usage: { completion_tokens: 5, prompt_tokens: 20 },
@@ -44,13 +58,13 @@ mock.module("just-bash", () => ({
   ReadWriteFs: class {},
 }));
 
-
 const BASE_OPTS = {
   url: "http://x", model: "m", apiKey: "x", system: "s",
   verbose: false, jsonMode: false as const, sandbox: false, allowNetwork: false,
 };
 
-describe("run()", () => {
+// --- run() non-streaming ---
+describe("run() non-streaming", () => {
   beforeEach(() => mockCreate.mockClear());
 
   it("returns 0 on simple response", async () => {
@@ -65,7 +79,7 @@ describe("run()", () => {
   it("handles tool call then answer", async () => {
     mockCreate
       .mockResolvedValueOnce({
-        choices: [{ message: { content: "", tool_calls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"date"}' } }] } }],
+        choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"date"}' } }] } }],
         usage: { completion_tokens: 5, prompt_tokens: 20 },
       })
       .mockResolvedValueOnce({
@@ -75,6 +89,37 @@ describe("run()", () => {
     const code = await run({ ...BASE_OPTS, prompt: "what day is it?", sandbox: true });
     expect(code).toBe(0);
     expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("pushes assistant message once for multiple tool calls", async () => {
+    const capturedMessages: any[] = [];
+    mockCreate
+      .mockImplementationOnce(async ({ messages }: any) => {
+        return {
+          choices: [{ message: { content: "", tool_calls: [
+            { id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"echo a"}' } },
+            { id: "c2", type: "function", function: { name: "bash", arguments: '{"command":"echo b"}' } },
+          ] } }],
+          usage: { completion_tokens: 10, prompt_tokens: 20 },
+        };
+      })
+      .mockImplementationOnce(async ({ messages }: any) => {
+        capturedMessages.push(...messages);
+        return {
+          choices: [{ message: { content: "done", tool_calls: null } }],
+          usage: { completion_tokens: 3, prompt_tokens: 50 },
+        };
+      });
+    const code = await run({ ...BASE_OPTS, prompt: "run two commands" });
+    expect(code).toBe(0);
+    // assistant message should appear exactly once
+    const assistantMsgs = capturedMessages.filter((m: any) => m.role === "assistant");
+    expect(assistantMsgs.length).toBe(1);
+    // both tool results should be present
+    const toolMsgs = capturedMessages.filter((m: any) => m.role === "tool");
+    expect(toolMsgs.length).toBe(2);
+    expect(toolMsgs[0].tool_call_id).toBe("c1");
+    expect(toolMsgs[1].tool_call_id).toBe("c2");
   });
 
   it("retries on invalid JSON", async () => {
@@ -109,11 +154,119 @@ describe("run()", () => {
 
   it("returns 1 when max steps reached", async () => {
     mockCreate.mockResolvedValue({
-      choices: [{ message: { content: "", tool_calls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"echo hi"}' } }] } }],
+      choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"echo hi"}' } }] } }],
       usage: { completion_tokens: 5, prompt_tokens: 20 },
     });
     const code = await run({ ...BASE_OPTS, prompt: "loop", maxSteps: 3, sandbox: true });
     expect(code).toBe(1);
     expect(mockCreate).toHaveBeenCalledTimes(3);
+  });
+
+  it("passes stream:false when jsonMode is set", async () => {
+    let capturedOpts: any;
+    mockCreate.mockImplementationOnce(async (opts: any) => {
+      capturedOpts = opts;
+      return { choices: [{ message: { content: '{"x":1}', tool_calls: null } }], usage: { completion_tokens: 5, prompt_tokens: 10 } };
+    });
+    await run({ ...BASE_OPTS, prompt: "test", jsonMode: true });
+    expect(capturedOpts.stream).toBeFalsy();
+  });
+});
+
+// --- run() streaming ---
+describe("run() streaming", () => {
+  let isTTYSpy: any;
+
+  beforeEach(() => {
+    mockCreate.mockClear();
+    // Simulate a TTY environment
+    isTTYSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  });
+
+  afterEach(() => {
+    isTTYSpy.mockRestore();
+    Object.defineProperty(process.stdout, "isTTY", { value: undefined, configurable: true });
+  });
+
+  it("uses streaming when TTY and not jsonMode", async () => {
+    let capturedOpts: any;
+    mockCreate.mockImplementationOnce(async (opts: any) => {
+      capturedOpts = opts;
+      return makeStream([
+        { choices: [{ delta: { content: "hello", tool_calls: null } }] },
+        { choices: [{ delta: { content: " world", tool_calls: null } }] },
+      ]);
+    });
+    const code = await run({ ...BASE_OPTS, prompt: "test" });
+    expect(code).toBe(0);
+    expect(capturedOpts.stream).toBe(true);
+  });
+
+  it("writes chunks to stdout as they arrive", async () => {
+    mockCreate.mockImplementationOnce(async () =>
+      makeStream([
+        { choices: [{ delta: { content: "chunk1" } }] },
+        { choices: [{ delta: { content: "chunk2" } }] },
+      ])
+    );
+    await run({ ...BASE_OPTS, prompt: "test" });
+    const written = isTTYSpy.mock.calls.map((c: any) => c[0]).join("");
+    expect(written).toContain("chunk1");
+    expect(written).toContain("chunk2");
+  });
+
+  it("accumulates streaming tool_call deltas and executes", async () => {
+    mockCreate
+      .mockImplementationOnce(async () =>
+        makeStream([
+          { choices: [{ delta: { content: "", tool_calls: [{ index: 0, id: "c", type: "function", function: { name: "ba", arguments: "" } }] } }] },
+          { choices: [{ delta: { content: "", tool_calls: [{ index: 0, id: "", type: "function", function: { name: "sh", arguments: '{"command' } }] } }] },
+          { choices: [{ delta: { content: "", tool_calls: [{ index: 0, id: "", type: "function", function: { name: "", arguments: '":"pwd"}' } }] } }] },
+        ])
+      )
+      .mockImplementationOnce(async () =>
+        makeStream([
+          { choices: [{ delta: { content: "/home" } }] },
+        ])
+      );
+    const code = await run({ ...BASE_OPTS, prompt: "where am i?", sandbox: true });
+    expect(code).toBe(0);
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    // second call should have the tool result message
+    const secondCallMessages = (mockCreate.mock.calls[1] as any)[0].messages;
+    const toolMsg = secondCallMessages.find((m: any) => m.role === "tool");
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg.tool_call_id).toBe("c");
+  });
+
+  it("streaming tool call: pushes assistant message exactly once", async () => {
+    const capturedMessages: any[] = [];
+    mockCreate
+      .mockImplementationOnce(async () =>
+        makeStream([
+          { choices: [{ delta: { tool_calls: [{ index: 0, id: "t1", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } }] } }] },
+          { choices: [{ delta: { tool_calls: [{ index: 1, id: "t2", type: "function", function: { name: "bash", arguments: '{"command":"pwd"}' } }] } }] },
+        ])
+      )
+      .mockImplementationOnce(async ({ messages }: any) => {
+        capturedMessages.push(...messages);
+        return makeStream([{ choices: [{ delta: { content: "done" } }] }]);
+      });
+    await run({ ...BASE_OPTS, prompt: "two tools" });
+    const assistantMsgs = capturedMessages.filter((m: any) => m.role === "assistant");
+    expect(assistantMsgs.length).toBe(1);
+    const toolMsgs = capturedMessages.filter((m: any) => m.role === "tool");
+    expect(toolMsgs.length).toBe(2);
+  });
+
+  it("disables streaming when jsonMode is set even in TTY", async () => {
+    let capturedOpts: any;
+    mockCreate.mockImplementationOnce(async (opts: any) => {
+      capturedOpts = opts;
+      return { choices: [{ message: { content: '{"x":1}', tool_calls: null } }], usage: { completion_tokens: 5, prompt_tokens: 10 } };
+    });
+    await run({ ...BASE_OPTS, prompt: "test", jsonMode: true });
+    expect(capturedOpts.stream).toBeFalsy();
   });
 });

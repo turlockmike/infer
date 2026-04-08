@@ -217,11 +217,11 @@ export async function run(opts: {
     if (toolCalls.length) {
       if (stream && content) { /* already printed above */ }
       const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content, tool_calls: toolCalls };
+      messages.push(assistantMsg);
       for (const call of toolCalls) {
         const cmd = JSON.parse(call.function.arguments).command as string;
         const output = await execBash(cmd, sandbox, allowNetwork, cwd);
         if (verbose) { process.stderr.write(`+ ${cmd}\n`); process.stderr.write(`${output}\n`); }
-        messages.push(assistantMsg);
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
       }
     } else {
