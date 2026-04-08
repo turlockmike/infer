@@ -95,7 +95,8 @@ mock.module("readline", () => ({
     },
     close: () => {},
     once: () => {},
-    on: (_e: string, cb: () => void) => {},
+    on: () => {},
+    removeListener: () => {},
   }),
 }));
 
