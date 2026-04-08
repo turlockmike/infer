@@ -436,8 +436,10 @@ Examples:
   let jsonMode: boolean | string = false;
   if (values.json !== undefined) {
     jsonMode = values.json === "" ? true : values.json;
-    system += "\n\nRespond with valid JSON only. No markdown, no code fences, no explanation. If the result is a list, return a JSON array with one element per item — never a single string with newlines.";
-    if (typeof jsonMode === "string") system += `\n\nThe response must match this shape exactly: ${jsonMode}`;
+    const jsonInstruction = typeof jsonMode === "string"
+      ? `Respond with valid JSON only matching this exact shape: ${jsonMode}. No markdown, no code fences, no explanation.`
+      : `Respond with valid JSON only. No markdown, no code fences, no explanation. If the result is a list, return a JSON array with one element per item — never a single string with newlines.`;
+    system = jsonInstruction + "\n\n" + system;
   }
 
   const fileContext  = values.file ? readFileSync(values.file, "utf8").trim() : null;
@@ -445,7 +447,10 @@ Examples:
   const parts        = [fileContext, stdinData].filter(Boolean) as string[];
   const context      = parts.join("\n\n");
   const promptArg    = positionals.join(" ");
-  const prompt       = context && promptArg ? `${context}\n\n${promptArg}` : context || promptArg;
+  const basePrompt   = context && promptArg ? `${context}\n\n${promptArg}` : context || promptArg;
+  const prompt       = jsonMode && basePrompt
+    ? `${basePrompt}\n\nRespond with JSON only.`
+    : basePrompt;
 
   const replMode = isReplCmd || (!prompt && !!process.stdin.isTTY);
 
