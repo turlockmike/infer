@@ -1,5 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
-import { validateShape, run, runRepl, loadConfig } from "./infer";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { validateShape, run, runRepl, loadConfig, loadSession, appendToSession } from "./infer";
 
 // --- validateShape ---
 describe("validateShape", () => {
@@ -92,7 +95,8 @@ mock.module("readline", () => ({
     },
     close: () => {},
     once: () => {},
-    on: (_e: string, cb: () => void) => {},
+    on: () => {},
+    removeListener: () => {},
   }),
 }));
 
@@ -100,6 +104,55 @@ const BASE_OPTS = {
   url: "http://x", model: "m", apiKey: "x", system: "s",
   verbose: false, jsonMode: false as const, sandbox: false, allowNetwork: false,
 };
+
+// --- thinking block stripping ---
+describe("thinking block stripping", () => {
+  beforeEach(() => mockCreate.mockClear());
+
+  it("strips <think>...</think> blocks from response (qwen3/DeepSeek style)", async () => {
+    let output = "";
+    const origLog = console.log;
+    console.log = (s: string) => { output = s; };
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "<think>\nsome chain of thought\n</think>\nParis", tool_calls: null } }],
+      usage: { completion_tokens: 10, prompt_tokens: 20 },
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "capital of France?" });
+    console.log = origLog;
+    expect(code).toBe(0);
+    expect(output).toBe("Paris");
+    expect(output).not.toContain("<think>");
+  });
+
+  it("strips <thinking>...</thinking> blocks (GLM/nemotron style)", async () => {
+    let output = "";
+    const origLog = console.log;
+    console.log = (s: string) => { output = s; };
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "<thinking>\nlong reasoning here\n</thinking>\n42", tool_calls: null } }],
+      usage: { completion_tokens: 10, prompt_tokens: 20 },
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "7 * 6?" });
+    console.log = origLog;
+    expect(code).toBe(0);
+    expect(output).toBe("42");
+    expect(output).not.toContain("<thinking>");
+  });
+
+  it("passes through responses with no thinking blocks unchanged", async () => {
+    let output = "";
+    const origLog = console.log;
+    console.log = (s: string) => { output = s; };
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "plain answer", tool_calls: null } }],
+      usage: { completion_tokens: 2, prompt_tokens: 10 },
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "test" });
+    console.log = origLog;
+    expect(code).toBe(0);
+    expect(output).toBe("plain answer");
+  });
+});
 
 // --- run() non-streaming ---
 describe("run() non-streaming", () => {
@@ -110,7 +163,7 @@ describe("run() non-streaming", () => {
       choices: [{ message: { content: "Paris", tool_calls: null } }],
       usage: { completion_tokens: 5, prompt_tokens: 20 },
     });
-    const code = await run({ ...BASE_OPTS, prompt: "capital of France?" });
+    const { code } = await run({ ...BASE_OPTS, prompt: "capital of France?" });
     expect(code).toBe(0);
   });
 
@@ -124,7 +177,7 @@ describe("run() non-streaming", () => {
         choices: [{ message: { content: "today", tool_calls: null } }],
         usage: { completion_tokens: 3, prompt_tokens: 30 },
       });
-    const code = await run({ ...BASE_OPTS, prompt: "what day is it?", sandbox: true });
+    const { code } = await run({ ...BASE_OPTS, prompt: "what day is it?", sandbox: true });
     expect(code).toBe(0);
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
@@ -148,7 +201,7 @@ describe("run() non-streaming", () => {
           usage: { completion_tokens: 3, prompt_tokens: 50 },
         };
       });
-    const code = await run({ ...BASE_OPTS, prompt: "run two commands" });
+    const { code } = await run({ ...BASE_OPTS, prompt: "run two commands" });
     expect(code).toBe(0);
     // assistant message should appear exactly once
     const assistantMsgs = capturedMessages.filter((m: any) => m.role === "assistant");
@@ -170,7 +223,7 @@ describe("run() non-streaming", () => {
         choices: [{ message: { content: '{"ok":true}', tool_calls: null } }],
         usage: { completion_tokens: 5, prompt_tokens: 20 },
       });
-    const code = await run({ ...BASE_OPTS, prompt: "get data", jsonMode: true });
+    const { code } = await run({ ...BASE_OPTS, prompt: "get data", jsonMode: true });
     expect(code).toBe(0);
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
@@ -185,7 +238,7 @@ describe("run() non-streaming", () => {
         choices: [{ message: { content: '{"name":"alice"}', tool_calls: null } }],
         usage: { completion_tokens: 5, prompt_tokens: 20 },
       });
-    const code = await run({ ...BASE_OPTS, prompt: "get user", jsonMode: '{"name":""}' });
+    const { code } = await run({ ...BASE_OPTS, prompt: "get user", jsonMode: '{"name":""}' });
     expect(code).toBe(0);
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
@@ -195,7 +248,7 @@ describe("run() non-streaming", () => {
       choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"echo hi"}' } }] } }],
       usage: { completion_tokens: 5, prompt_tokens: 20 },
     });
-    const code = await run({ ...BASE_OPTS, prompt: "loop", maxSteps: 3, sandbox: true });
+    const { code } = await run({ ...BASE_OPTS, prompt: "loop", maxSteps: 3, sandbox: true });
     expect(code).toBe(1);
     expect(mockCreate).toHaveBeenCalledTimes(3);
   });
@@ -205,7 +258,7 @@ describe("run() non-streaming", () => {
       choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"echo hi"}' } }] } }],
       usage: { completion_tokens: 5, prompt_tokens: 20 },
     });
-    const code = await run({ ...BASE_OPTS, prompt: "loop" });
+    const { code } = await run({ ...BASE_OPTS, prompt: "loop" });
     expect(code).toBe(1);
     expect(mockCreate).toHaveBeenCalledTimes(10);
   });
@@ -253,7 +306,7 @@ describe("run() streaming", () => {
         { choices: [{ delta: { content: " world" } }] },
       ]);
     });
-    const code = await run({ ...BASE_OPTS, prompt: "test", stream: true });
+    const { code } = await run({ ...BASE_OPTS, prompt: "test", stream: true });
     expect(code).toBe(0);
     expect(capturedOpts.stream).toBe(true);
   });
@@ -283,7 +336,7 @@ describe("run() streaming", () => {
       .mockImplementationOnce(async () =>
         makeStream([{ choices: [{ delta: { content: "/home" } }] }])
       );
-    const code = await run({ ...BASE_OPTS, prompt: "where am i?", sandbox: true, stream: true });
+    const { code } = await run({ ...BASE_OPTS, prompt: "where am i?", sandbox: true, stream: true });
     expect(code).toBe(0);
     expect(mockCreate).toHaveBeenCalledTimes(2);
     const secondCallMessages = (mockCreate.mock.calls[1] as any)[0].messages;
@@ -424,5 +477,85 @@ describe("runRepl()", () => {
     });
     await runRepl({ ...REPL_OPTS, stream: true });
     expect(capturedOpts.stream).toBe(true);
+  });
+});
+
+// --- Session (JSONL) ---
+describe("session JSONL", () => {
+  let tmpDir: string;
+  let sessionFile: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "infer-test-"));
+    sessionFile = join(tmpDir, "session.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  it("loadSession returns empty array for missing file", () => {
+    expect(loadSession(sessionFile)).toEqual([]);
+  });
+
+  it("appendToSession + loadSession round-trips messages", () => {
+    const msgs = [
+      { role: "user" as const, content: "hello" },
+      { role: "assistant" as const, content: "hi" },
+    ];
+    appendToSession(sessionFile, msgs);
+    expect(loadSession(sessionFile)).toEqual(msgs);
+  });
+
+  it("loadSession filters out system messages", () => {
+    const msgs = [
+      { role: "system" as const, content: "you are helpful" },
+      { role: "user" as const, content: "hello" },
+      { role: "assistant" as const, content: "hi" },
+    ];
+    appendToSession(sessionFile, msgs);
+    const loaded = loadSession(sessionFile);
+    expect(loaded).toHaveLength(2);
+    expect(loaded.every(m => m.role !== "system")).toBe(true);
+  });
+
+  it("appends across multiple calls (conversation grows)", () => {
+    appendToSession(sessionFile, [{ role: "user" as const, content: "turn1" }]);
+    appendToSession(sessionFile, [{ role: "assistant" as const, content: "reply1" }]);
+    appendToSession(sessionFile, [{ role: "user" as const, content: "turn2" }]);
+    const loaded = loadSession(sessionFile);
+    expect(loaded).toHaveLength(3);
+    expect((loaded[2] as any).content).toBe("turn2");
+  });
+
+  it("run() returns messages including new turn", async () => {
+    mockCreate.mockClear();
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "answer", tool_calls: null } }],
+      usage: { completion_tokens: 2, prompt_tokens: 10 },
+    });
+    const { code, messages } = await run({ ...BASE_OPTS, prompt: "question" });
+    expect(code).toBe(0);
+    expect(messages.some(m => m.role === "user" && (m as any).content === "question")).toBe(true);
+    expect(messages.some(m => m.role === "assistant" && (m as any).content === "answer")).toBe(true);
+  });
+
+  it("run() with initialMessages continues from prior session", async () => {
+    mockCreate.mockClear();
+    const prior = [
+      { role: "user" as const, content: "first question" },
+      { role: "assistant" as const, content: "first answer" },
+    ];
+    let capturedMessages: any[] = [];
+    mockCreate.mockImplementationOnce(async ({ messages }: any) => {
+      capturedMessages = [...messages]; // snapshot before run() mutates the array
+      return { choices: [{ message: { content: "second answer", tool_calls: null } }], usage: { completion_tokens: 3, prompt_tokens: 20 } };
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "second question", initialMessages: prior });
+    expect(code).toBe(0);
+    // System + 2 prior + new user = 4 messages sent to LLM
+    expect(capturedMessages).toHaveLength(4);
+    expect(capturedMessages[1].content).toBe("first question");
+    expect(capturedMessages[3].content).toBe("second question");
   });
 });

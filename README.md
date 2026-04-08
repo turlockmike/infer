@@ -84,6 +84,38 @@ cat logs.txt | infer "summarize the errors"
 infer -f config.yaml "is this valid?"
 ```
 
+## Sessions
+
+Use `-S FILE` to persist a conversation across invocations. The file is JSONL — one message per line, human-readable, appendable with standard tools.
+
+```bash
+# Start a session
+infer -S /tmp/review.jsonl "here is the file" < src/auth.py
+
+# Do something programmatic between turns
+issues=$(run_linter src/auth.py)
+
+# Continue the same conversation
+echo "$issues" | infer -S /tmp/review.jsonl "the linter found these issues — which ones matter?"
+
+# One more turn
+infer -S /tmp/review.jsonl "now write the fix for the most critical one"
+```
+
+Sessions also work in REPL mode — load an existing conversation and continue interactively:
+
+```bash
+infer -S /tmp/review.jsonl repl
+# infer repl  gemma4:latest  (6 messages loaded from /tmp/review.jsonl)
+```
+
+The session file is plain JSONL. Inspect, fork, or edit it with standard tools:
+
+```bash
+jq '.role + ": " + .content' /tmp/review.jsonl   # read conversation
+cp /tmp/review.jsonl /tmp/review-fork.jsonl       # branch from this point
+```
+
 ## Sandbox
 
 By default, bash commands run in a sandbox — real system binaries with OS-enforced write restrictions. Network access is blocked and writes are restricted to the current directory and `/tmp`.
@@ -231,6 +263,25 @@ Local overrides per project: `.infer.json` (config) and `.infer.md` (system prom
 echo "Output only code. No explanation." > ~/.config/infer/roles/coder.md
 infer -r coder "write a fizzbuzz in python"
 ```
+
+## Model Compatibility
+
+infer requires a model that supports **tool use** (function calling). Not all models do.
+Thinking models (chain-of-thought) are handled automatically — reasoning blocks are stripped from output.
+
+| Model family | Tool use | Notes |
+|---|---|---|
+| `gemma4` | ✅ | Works well; thinking blocks stripped automatically |
+| `qwen2.5` | ✅ | Works well |
+| `qwen3` | ✅ | Thinking suppressed via `/no_think` + output stripping |
+| `glm-5.1` | ✅ | Thinking blocks stripped automatically |
+| `nemotron-cascade-2` | ✅ | Thinking blocks stripped automatically |
+| `llama3.1+` | ✅ | Works well |
+| `phi4` | ✅ | Works well |
+| `lfm2` | ✅ | Works well |
+| `gemma3` | ❌ | Does not support tool use in Ollama — use `gemma4` instead |
+
+If you see `model 'X' does not support tool use`, switch to a different model or variant.
 
 ## Providers
 

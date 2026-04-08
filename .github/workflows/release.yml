@@ -14,12 +14,35 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install
 
+      - name: Unit tests
+        run: bun test
+
       - name: Build binaries
         run: |
           bun build --compile --target=bun-darwin-arm64 infer.ts --outfile=infer-darwin-arm64
           bun build --compile --target=bun-darwin-x64   infer.ts --outfile=infer-darwin-x64
           bun build --compile --target=bun-linux-arm64  infer.ts --outfile=infer-linux-arm64
           bun build --compile --target=bun-linux-x64    infer.ts --outfile=infer-linux-x64
+
+      - name: Smoke test darwin-arm64
+        run: ./infer-darwin-arm64 --version
+
+      - name: Smoke test darwin-x64
+        run: ./infer-darwin-x64 --version
+
+      - name: Smoke test linux-x64 (Docker)
+        run: |
+          docker run --rm \
+            -v "$PWD/infer-linux-x64:/usr/local/bin/infer" \
+            ubuntu:24.04 \
+            infer --version
+
+      - name: Smoke test linux-arm64 (Docker)
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD/infer-linux-arm64:/usr/local/bin/infer" \
+            ubuntu:24.04 \
+            infer --version
 
       - name: Create release
         uses: softprops/action-gh-release@v2
