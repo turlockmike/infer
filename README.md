@@ -15,12 +15,15 @@ infer -j '{"name":"string","pid":0}' "current process info"
 curl -fsSL https://raw.githubusercontent.com/turlockmike/infer/main/install.sh | sh
 ```
 
-Or manually:
+Downloads a pre-built binary for your platform (macOS arm64/x64, Linux arm64/x64). No runtime required.
+
+**From source** (requires [Bun](https://bun.sh)):
 
 ```bash
-curl -o /usr/local/bin/infer https://raw.githubusercontent.com/turlockmike/infer/main/infer
-chmod +x /usr/local/bin/infer
-pip install openai
+git clone https://github.com/turlockmike/infer
+cd infer
+bun install
+bun run infer.ts "hello"
 ```
 
 ## Usage
@@ -28,13 +31,15 @@ pip install openai
 ```
 infer [OPTIONS] [PROMPT]
 
-  -m MODEL     Model name (default: gemma4:latest)
-  -u URL       Provider base URL (default: http://localhost:11434/v1)
-  -k KEY       API key (default: "ollama" for local providers)
-  -r ROLE      Named role — loads ~/.config/infer/roles/<name>.md
-  -f FILE      File to use as context (prepended to prompt)
-  -j [SHAPE]   Output JSON, optionally validated against a shape
-  -v           Verbose — show tool calls and token stats on stderr
+  -m MODEL          Model name (default: gemma4:latest)
+  -u URL            Provider base URL (default: http://localhost:11434/v1)
+  -k KEY            API key (default: "ollama" for local providers)
+  -r ROLE           Named role — loads ~/.config/infer/roles/<name>.md
+  -f FILE           File to use as context (prepended to prompt)
+  -j [SHAPE]        Output JSON, optionally validated against a shape
+  -v                Verbose — show tool calls and token stats on stderr
+  --no-sandbox      Use real bash (default: sandboxed via just-bash)
+  --allow-network   Enable network access inside the sandbox
 ```
 
 stdin is context, argument is the instruction:
@@ -42,6 +47,16 @@ stdin is context, argument is the instruction:
 ```bash
 cat logs.txt | infer "summarize the errors"
 infer -f config.yaml "is this valid?"
+```
+
+## Sandbox
+
+By default, bash commands run inside [just-bash](https://github.com/vercel-labs/just-bash) — a sandboxed bash interpreter. Network access is blocked and writes are restricted to the current directory and `/tmp`.
+
+```bash
+infer "list files here"                   # sandboxed (default)
+infer --allow-network "fetch example.com" # enable network in sandbox
+infer --no-sandbox "unrestricted bash"    # bypass sandbox entirely
 ```
 
 ## JSON Output
