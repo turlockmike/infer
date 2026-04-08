@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun test
+
+  install-script:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+
+      - name: Build linux-x64 binary
+        run: bun build --compile --target=bun-linux-x64 infer.ts --outfile=infer-linux-x64
+
+      - name: Smoke test install script logic (simulated)
+        run: |
+          # Verify the binary is executable and responds to --version
+          chmod +x infer-linux-x64
+          ./infer-linux-x64 --version
+
+      - name: Verify install.sh syntax
+        run: bash -n install.sh

@@ -3,8 +3,7 @@
  * Tests are automatically skipped when the configured model is unreachable.
  *
  * Run manually:
- *   bun test:e2e
- *   bun test infer.e2e.test.ts
+ *   bun run test:e2e
  *
  * Configure via env:
  *   INFER_URL   (default: http://localhost:11434/v1)
@@ -14,7 +13,10 @@
 
 import { describe, it, expect } from "bun:test";
 import { EventEmitter } from "events";
-import { run, runRepl, loadConfig } from "./infer";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { run, runRepl, loadConfig, loadSession, appendToSession } from "./infer";
 
 const cfg = loadConfig();
 const E2E_URL   = process.env.INFER_URL   ?? cfg.url;
@@ -176,5 +178,42 @@ describe("E2E: repl", () => {
 
     expect(responses.some(r => r.toLowerCase().includes("alpha"))).toBe(true);
     expect(responses.some(r => r.toLowerCase().includes("beta"))).toBe(true);
+  }, 60_000);
+});
+
+describe("E2E: session round-trip", () => {
+  it.skipIf(!modelAvailable)("second call sees context from first call", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "infer-e2e-session-"));
+    const sessionFile = join(tmpDir, "session.jsonl");
+
+    try {
+      // Turn 1: plant a secret word
+      const origLog = console.log;
+      console.log = () => {};
+      const { messages: m1 } = await run({
+        ...OPTS,
+        prompt: 'Remember this: the secret word is "tangerine". Reply with only: "Noted."',
+      });
+      console.log = origLog;
+
+      // Save turn to session (skip system message at index 0)
+      appendToSession(sessionFile, m1.slice(1));
+
+      // Turn 2: ask what the secret was, with prior context loaded
+      let output2 = "";
+      const origLog2 = console.log;
+      console.log = (s: string) => { output2 = s; };
+      const { code } = await run({
+        ...OPTS,
+        prompt: "What was the secret word I told you? Reply with only the word.",
+        initialMessages: loadSession(sessionFile),
+      });
+      console.log = origLog2;
+
+      expect(code).toBe(0);
+      expect(output2.toLowerCase()).toContain("tangerine");
+    } finally {
+      rmSync(tmpDir, { recursive: true });
+    }
   }, 60_000);
 });
