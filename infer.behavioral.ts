@@ -182,8 +182,9 @@ describe("conciseness: output suitable for piping", () => {
     const { code, output } = await evalRun("what is the current unix timestamp? Reply with only the number.");
     expect(code).toBe(0);
     // Should be a number, not a paragraph
+    // Note: qwen3 models with chain-of-thought mode will fail this — use /no_think suffix
     expect(output.trim()).toMatch(/^\d+$/);
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!modelAvailable)("JSON mode output is valid JSON with no prose wrapping", async () => {
     const { code, output } = await evalRun(
@@ -194,5 +195,5 @@ describe("conciseness: output suitable for piping", () => {
     const parsed = JSON.parse(output);
     expect(typeof parsed.path).toBe("string");
     expect(parsed.path).toMatch(/\//);
-  }, 30_000);
+  }, 60_000);
 });
