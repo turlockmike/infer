@@ -175,6 +175,7 @@ export async function run(opts: {
   jsonMode: boolean | string;
   sandbox: boolean;
   allowNetwork: boolean;
+  stream?: boolean;
   maxSteps?: number;
 }): Promise<number> {
   const { prompt, url, model, apiKey, system, verbose, jsonMode, sandbox, allowNetwork, maxSteps = 10 } = opts;
@@ -185,7 +186,7 @@ export async function run(opts: {
     { role: "user", content: prompt },
   ];
 
-  const stream = !!process.stdout.isTTY && !jsonMode;
+  const stream = (opts.stream ?? false) && !jsonMode;
   if (verbose) process.stderr.write(`model=${model} url=${url} sandbox=${sandbox} stream=${stream}\n`);
 
   for (let step = 1; step <= maxSteps; step++) {
@@ -269,8 +270,9 @@ export async function runRepl(opts: {
   verbose: boolean;
   sandbox: boolean;
   allowNetwork: boolean;
+  stream?: boolean;
 }): Promise<void> {
-  const { url, model, apiKey, system, verbose, sandbox, allowNetwork } = opts;
+  const { url, model, apiKey, system, verbose, sandbox, allowNetwork, stream = false } = opts;
   const cwd = process.cwd();
   const client = new OpenAI({ baseURL: url, apiKey });
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -299,20 +301,28 @@ export async function runRepl(opts: {
       let content = "";
       let toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
 
-      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
-      for await (const chunk of resp) {
-        const delta = chunk.choices[0]?.delta;
-        if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
-        if (delta?.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            if (!toolCalls[tc.index]) toolCalls[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
-            if (tc.id) toolCalls[tc.index].id += tc.id;
-            if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
-            if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
+      if (stream) {
+        const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
+        for await (const chunk of resp) {
+          const delta = chunk.choices[0]?.delta;
+          if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (!toolCalls[tc.index]) toolCalls[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+              if (tc.id) toolCalls[tc.index].id += tc.id;
+              if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
+              if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
+            }
           }
         }
+        if (content) process.stdout.write("\n");
+      } else {
+        const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
+        const msg = resp.choices[0].message;
+        content = msg.content ?? "";
+        toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
+        if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
       }
-      if (content) process.stdout.write("\n");
 
       if (toolCalls.length) {
         const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content, tool_calls: toolCalls };
@@ -324,6 +334,7 @@ export async function runRepl(opts: {
           messages.push({ role: "tool", tool_call_id: call.id, content: output });
         }
       } else {
+        if (!stream) process.stdout.write(content + "\n");
         messages.push({ role: "assistant", content });
         replied = true;
       }
@@ -363,6 +374,7 @@ if (import.meta.main) {
       file:          { type: "string",  short: "f" },
       json:          { type: "string",  short: "j" },
       verbose:       { type: "boolean", short: "v", default: false },
+      stream:        { type: "boolean", default: false },
       "no-sandbox":  { type: "boolean", default: false },
       "allow-network": { type: "boolean", default: false },
     },
@@ -394,6 +406,7 @@ if (import.meta.main) {
       apiKey:       values["api-key"] ?? cfg.api_key,
       system,
       verbose:      values.verbose ?? false,
+      stream:       values.stream ?? false,
       sandbox:      !(values["no-sandbox"] ?? false),
       allowNetwork: values["allow-network"] ?? false,
     });
@@ -401,7 +414,7 @@ if (import.meta.main) {
   }
 
   if (!prompt) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -v\n  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
     process.exit(1);
   }
 
@@ -412,6 +425,7 @@ if (import.meta.main) {
     apiKey:       values["api-key"] ?? cfg.api_key,
     system,
     verbose:      values.verbose ?? false,
+    stream:       values.stream ?? false,
     jsonMode,
     sandbox:      !(values["no-sandbox"] ?? false),
     allowNetwork: values["allow-network"] ?? false,

@@ -176,43 +176,50 @@ describe("run() non-streaming", () => {
     expect(mockCreate).toHaveBeenCalledTimes(3);
   });
 
-  it("passes stream:false when jsonMode is set", async () => {
+  it("does not stream by default", async () => {
+    let capturedOpts: any;
+    mockCreate.mockImplementationOnce(async (opts: any) => {
+      capturedOpts = opts;
+      return { choices: [{ message: { content: "ok", tool_calls: null } }], usage: { completion_tokens: 2, prompt_tokens: 10 } };
+    });
+    await run({ ...BASE_OPTS, prompt: "test" });
+    expect(capturedOpts.stream).toBeFalsy();
+  });
+
+  it("passes stream:false when jsonMode is set even with stream:true", async () => {
     let capturedOpts: any;
     mockCreate.mockImplementationOnce(async (opts: any) => {
       capturedOpts = opts;
       return { choices: [{ message: { content: '{"x":1}', tool_calls: null } }], usage: { completion_tokens: 5, prompt_tokens: 10 } };
     });
-    await run({ ...BASE_OPTS, prompt: "test", jsonMode: true });
+    await run({ ...BASE_OPTS, prompt: "test", jsonMode: true, stream: true });
     expect(capturedOpts.stream).toBeFalsy();
   });
 });
 
 // --- run() streaming ---
 describe("run() streaming", () => {
-  let isTTYSpy: any;
+  let writeSpy: any;
 
   beforeEach(() => {
     mockCreate.mockClear();
-    // Simulate a TTY environment
-    isTTYSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
-    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    writeSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
   });
 
   afterEach(() => {
-    isTTYSpy.mockRestore();
-    Object.defineProperty(process.stdout, "isTTY", { value: undefined, configurable: true });
+    writeSpy.mockRestore();
   });
 
-  it("uses streaming when TTY and not jsonMode", async () => {
+  it("uses stream:true when stream option is set", async () => {
     let capturedOpts: any;
     mockCreate.mockImplementationOnce(async (opts: any) => {
       capturedOpts = opts;
       return makeStream([
-        { choices: [{ delta: { content: "hello", tool_calls: null } }] },
-        { choices: [{ delta: { content: " world", tool_calls: null } }] },
+        { choices: [{ delta: { content: "hello" } }] },
+        { choices: [{ delta: { content: " world" } }] },
       ]);
     });
-    const code = await run({ ...BASE_OPTS, prompt: "test" });
+    const code = await run({ ...BASE_OPTS, prompt: "test", stream: true });
     expect(code).toBe(0);
     expect(capturedOpts.stream).toBe(true);
   });
@@ -224,8 +231,8 @@ describe("run() streaming", () => {
         { choices: [{ delta: { content: "chunk2" } }] },
       ])
     );
-    await run({ ...BASE_OPTS, prompt: "test" });
-    const written = isTTYSpy.mock.calls.map((c: any) => c[0]).join("");
+    await run({ ...BASE_OPTS, prompt: "test", stream: true });
+    const written = writeSpy.mock.calls.map((c: any) => c[0]).join("");
     expect(written).toContain("chunk1");
     expect(written).toContain("chunk2");
   });
@@ -240,14 +247,11 @@ describe("run() streaming", () => {
         ])
       )
       .mockImplementationOnce(async () =>
-        makeStream([
-          { choices: [{ delta: { content: "/home" } }] },
-        ])
+        makeStream([{ choices: [{ delta: { content: "/home" } }] }])
       );
-    const code = await run({ ...BASE_OPTS, prompt: "where am i?", sandbox: true });
+    const code = await run({ ...BASE_OPTS, prompt: "where am i?", sandbox: true, stream: true });
     expect(code).toBe(0);
     expect(mockCreate).toHaveBeenCalledTimes(2);
-    // second call should have the tool result message
     const secondCallMessages = (mockCreate.mock.calls[1] as any)[0].messages;
     const toolMsg = secondCallMessages.find((m: any) => m.role === "tool");
     expect(toolMsg).toBeDefined();
@@ -267,20 +271,20 @@ describe("run() streaming", () => {
         capturedMessages.push(...messages);
         return makeStream([{ choices: [{ delta: { content: "done" } }] }]);
       });
-    await run({ ...BASE_OPTS, prompt: "two tools" });
+    await run({ ...BASE_OPTS, prompt: "two tools", stream: true });
     const assistantMsgs = capturedMessages.filter((m: any) => m.role === "assistant");
     expect(assistantMsgs.length).toBe(1);
     const toolMsgs = capturedMessages.filter((m: any) => m.role === "tool");
     expect(toolMsgs.length).toBe(2);
   });
 
-  it("disables streaming when jsonMode is set even in TTY", async () => {
+  it("disables streaming when jsonMode is set even with stream:true", async () => {
     let capturedOpts: any;
     mockCreate.mockImplementationOnce(async (opts: any) => {
       capturedOpts = opts;
       return { choices: [{ message: { content: '{"x":1}', tool_calls: null } }], usage: { completion_tokens: 5, prompt_tokens: 10 } };
     });
-    await run({ ...BASE_OPTS, prompt: "test", jsonMode: true });
+    await run({ ...BASE_OPTS, prompt: "test", jsonMode: true, stream: true });
     expect(capturedOpts.stream).toBeFalsy();
   });
 });
@@ -324,32 +328,29 @@ describe("runRepl()", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it("calls LLM with user input and streams response", async () => {
+  it("calls LLM with user input and prints response", async () => {
     replInputs = ["hello", "exit"];
-    mockCreate.mockImplementationOnce(async () =>
-      makeStream([
-        { choices: [{ delta: { content: "hi" } }] },
-        { choices: [{ delta: { content: " there" } }] },
-      ])
-    );
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "hi there", tool_calls: null } }],
+      usage: { completion_tokens: 3, prompt_tokens: 10 },
+    });
     await runRepl(REPL_OPTS);
     expect(mockCreate).toHaveBeenCalledTimes(1);
     const written = writeSpy.mock.calls.map((c: any) => c[0]).join("");
-    expect(written).toContain("hi");
-    expect(written).toContain("there");
+    expect(written).toContain("hi there");
   });
 
   it("handles tool call then answer in repl turn", async () => {
     replInputs = ["what dir?", "exit"];
     mockCreate
-      .mockImplementationOnce(async () =>
-        makeStream([
-          { choices: [{ delta: { tool_calls: [{ index: 0, id: "r1", type: "function", function: { name: "bash", arguments: '{"command":"pwd"}' } }] } }] },
-        ])
-      )
-      .mockImplementationOnce(async () =>
-        makeStream([{ choices: [{ delta: { content: "/home" } }] }])
-      );
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "", tool_calls: [{ id: "r1", type: "function", function: { name: "bash", arguments: '{"command":"pwd"}' } }] } }],
+        usage: { completion_tokens: 5, prompt_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "/home", tool_calls: null } }],
+        usage: { completion_tokens: 3, prompt_tokens: 30 },
+      });
     await runRepl(REPL_OPTS);
     expect(mockCreate).toHaveBeenCalledTimes(2);
     const secondMessages = (mockCreate.mock.calls[1] as any)[0].messages;
@@ -359,25 +360,35 @@ describe("runRepl()", () => {
   it("maintains conversation history across turns", async () => {
     replInputs = ["turn one", "turn two", "exit"];
     mockCreate
-      .mockImplementationOnce(async () => makeStream([{ choices: [{ delta: { content: "reply one" } }] }]))
+      .mockResolvedValueOnce({ choices: [{ message: { content: "reply one", tool_calls: null } }], usage: { completion_tokens: 3, prompt_tokens: 10 } })
       .mockImplementationOnce(async ({ messages }: any) => {
-        // second call should have both user turns + first assistant reply in history
         const userMsgs = messages.filter((m: any) => m.role === "user");
         expect(userMsgs.length).toBe(2);
-        return makeStream([{ choices: [{ delta: { content: "reply two" } }] }]);
+        return { choices: [{ message: { content: "reply two", tool_calls: null } }], usage: { completion_tokens: 3, prompt_tokens: 20 } };
       });
     await runRepl(REPL_OPTS);
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
 
-  it("uses streaming (passes stream:true to create)", async () => {
+  it("does not stream by default", async () => {
+    replInputs = ["test", "exit"];
+    let capturedOpts: any;
+    mockCreate.mockImplementationOnce(async (opts: any) => {
+      capturedOpts = opts;
+      return { choices: [{ message: { content: "ok", tool_calls: null } }], usage: { completion_tokens: 2, prompt_tokens: 10 } };
+    });
+    await runRepl(REPL_OPTS);
+    expect(capturedOpts.stream).toBeFalsy();
+  });
+
+  it("uses stream:true when stream option is set", async () => {
     replInputs = ["test", "exit"];
     let capturedOpts: any;
     mockCreate.mockImplementationOnce(async (opts: any) => {
       capturedOpts = opts;
       return makeStream([{ choices: [{ delta: { content: "ok" } }] }]);
     });
-    await runRepl(REPL_OPTS);
+    await runRepl({ ...REPL_OPTS, stream: true });
     expect(capturedOpts.stream).toBe(true);
   });
 });
