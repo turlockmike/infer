@@ -40,7 +40,7 @@ const DEFAULTS = {
   api_key: "ollama",
 };
 
-const DEFAULT_SYSTEM = `You have one tool: bash. Use it for everything.
+const DEFAULT_SYSTEM = `You have one tool: bash. Use it when the task requires system access — reading files, running commands, checking state. Answer directly when no system access is needed.
 
 Your final message is the output of this program — it will be printed to stdout and may be piped into other commands. Be concise and output only what was asked for. No preamble, no commentary.
 
@@ -210,6 +210,7 @@ export async function run(opts: {
         }
       }
       if (content) process.stdout.write("\n");
+      else if (!toolCalls.length) process.stderr.write("infer: warning: model returned empty response\n");
     } else {
       const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
       const msg = resp.choices[0].message;
@@ -229,6 +230,8 @@ export async function run(opts: {
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
       }
     } else {
+      if (!content && !stream) process.stderr.write("infer: warning: model returned empty response\n");
+
       if (!stream) {
 
         if (jsonMode) {
