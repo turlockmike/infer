@@ -1,6 +1,6 @@
 # infer
 
-Pipe-friendly LLM agent with a bash tool. Works with any OpenAI-compatible provider.
+Pipe-friendly LLM agent harness with a bash tool. Works with any OpenAI-compatible provider.
 
 ```bash
 infer "what directory am i in"
