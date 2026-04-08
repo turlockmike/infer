@@ -1,29 +1,36 @@
 #!/bin/sh
 set -e
 
+REPO="turlockmike/infer"
 INSTALL_DIR="${INFER_INSTALL_DIR:-/usr/local/bin}"
 BIN="$INSTALL_DIR/infer"
-RAW="https://raw.githubusercontent.com/turlockmike/infer/main/infer"
 
-echo "Installing infer to $BIN..."
+# Detect platform
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)  ARCH="x64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) echo "error: unsupported arch $ARCH" >&2; exit 1 ;;
+esac
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "error: python3 is required" >&2; exit 1
+ARTIFACT="infer-${OS}-${ARCH}"
+TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+
+if [ -z "$TAG" ]; then
+  echo "error: could not find latest release" >&2; exit 1
 fi
 
-pip install --quiet openai
+URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
+
+echo "Installing infer ${TAG} (${ARTIFACT}) to ${BIN}..."
 
 if [ -w "$INSTALL_DIR" ]; then
-  curl -fsSL "$RAW" -o "$BIN"
+  curl -fsSL "$URL" -o "$BIN"
+  chmod +x "$BIN"
 else
-  curl -fsSL "$RAW" | sudo tee "$BIN" > /dev/null
+  curl -fsSL "$URL" | sudo tee "$BIN" > /dev/null
+  sudo chmod +x "$BIN"
 fi
 
-chmod +x "$BIN" 2>/dev/null || sudo chmod +x "$BIN"
-
-echo "Installed: $(infer --version 2>/dev/null || echo ok)"
-echo ""
-echo "Configure a provider:"
-echo "  infer config set url http://localhost:11434/v1"
-echo "  infer config set model gemma4:latest"
-echo "  infer config set api_key ollama"
+echo "Done. Run: infer config set url http://localhost:11434/v1"
