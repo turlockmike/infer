@@ -2,6 +2,8 @@
 
 Pipe-friendly LLM agent harness with a bash tool. Works with any OpenAI-compatible provider.
 
+![demo](demo.gif)
+
 ```bash
 infer "what directory am i in"
 cat crash.log | infer "why did this fail"
@@ -25,6 +27,36 @@ cd infer
 bun install
 bun run infer.ts "hello"
 ```
+
+## Quickstart
+
+Set env vars and go — no config file needed:
+
+```bash
+# OpenAI
+export INFER_API_KEY=sk-...
+export INFER_URL=https://api.openai.com/v1
+export INFER_MODEL=gpt-4o
+
+# Anthropic (via OpenAI-compatible proxy, e.g. LiteLLM)
+export INFER_API_KEY=sk-ant-...
+export INFER_URL=http://localhost:4000/v1
+export INFER_MODEL=claude-opus-4-5
+
+# Groq
+export INFER_API_KEY=$GROQ_API_KEY
+export INFER_URL=https://api.groq.com/openai/v1
+export INFER_MODEL=llama-3.3-70b-versatile
+
+# Local (Ollama)
+export INFER_URL=http://localhost:11434/v1
+export INFER_MODEL=gemma4:latest
+export INFER_API_KEY=ollama
+
+infer "what directory am i in"
+```
+
+Env vars are overridden by CLI flags and persisted by `infer config set`.
 
 ## Usage
 
@@ -54,15 +86,21 @@ infer -f config.yaml "is this valid?"
 
 ## Sandbox
 
-By default, bash commands run inside macOS [Seatbelt](https://developer.apple.com/library/archive/documentation/Security/Conceptual/AppSandboxDesignGuide/AboutAppSandbox/AboutAppSandbox.html) (`sandbox-exec`) — real system binaries with OS-enforced write restrictions. Network access is blocked and writes are restricted to the current directory and `/tmp`.
+By default, bash commands run in a sandbox — real system binaries with OS-enforced write restrictions. Network access is blocked and writes are restricted to the current directory and `/tmp`.
 
-> **macOS only.** On Linux and Windows, the sandbox is unavailable and `infer` runs bash without restrictions (a warning is printed to stderr). Use `--no-sandbox` to suppress the warning and be explicit.
+| Platform | Sandbox backend |
+|----------|----------------|
+| macOS    | `sandbox-exec` (Seatbelt, built-in) |
+| Linux    | `bwrap` (bubblewrap, if installed) |
+| Other    | No sandbox — runs unrestricted |
 
 ```bash
-infer "list files here"                   # sandboxed on macOS, unrestricted elsewhere
+infer "list files here"                   # sandboxed
 infer --allow-network "fetch example.com" # enable network in sandbox
 infer --no-sandbox "unrestricted bash"    # bypass sandbox entirely
 ```
+
+Install bubblewrap on Linux: `apt install bubblewrap` / `dnf install bubblewrap`
 
 ## JSON Output
 

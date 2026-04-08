@@ -5,43 +5,24 @@ on:
     tags: ["v*"]
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: bun-linux-x64
-            artifact: infer-linux-x64
-          - os: ubuntu-latest
-            target: bun-linux-arm64
-            artifact: infer-linux-arm64
-          - os: macos-latest
-            target: bun-darwin-arm64
-            artifact: infer-darwin-arm64
-          - os: macos-13
-            target: bun-darwin-x64
-            artifact: infer-darwin-x64
-
-    runs-on: ${{ matrix.os }}
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
-      - run: bun build --compile --target=${{ matrix.target }} infer.ts --outfile ${{ matrix.artifact }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - name: Build binaries
+        run: |
+          bun build --compile --target=bun-darwin-arm64 infer.ts --outfile=infer-darwin-arm64
+          bun build --compile --target=bun-darwin-x64   infer.ts --outfile=infer-darwin-x64
+          bun build --compile --target=bun-linux-arm64  infer.ts --outfile=infer-linux-arm64
+          bun build --compile --target=bun-linux-x64    infer.ts --outfile=infer-linux-x64
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
           files: infer-*
+          generate_release_notes: true

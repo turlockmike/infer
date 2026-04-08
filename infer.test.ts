@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
-import { validateShape, run, runRepl } from "./infer";
+import { validateShape, run, runRepl, loadConfig } from "./infer";
 
 // --- validateShape ---
 describe("validateShape", () => {
@@ -31,6 +31,37 @@ describe("validateShape", () => {
     const shape = [{ name: "", score: 0 }];
     expect(validateShape([{ name: "a", score: 1 }], shape)).toBeNull();
     expect(validateShape([{ name: "a" }], shape)).toContain("[0]");
+  });
+});
+
+// --- loadConfig env vars ---
+describe("loadConfig env vars", () => {
+  const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+  afterEach(() => {
+    process.env.INFER_URL     = saved.url     as string;
+    process.env.INFER_MODEL   = saved.model   as string;
+    process.env.INFER_API_KEY = saved.key     as string;
+  });
+
+  it("picks up INFER_URL", () => {
+    process.env.INFER_URL = "http://custom:1234/v1";
+    expect(loadConfig().url).toBe("http://custom:1234/v1");
+  });
+
+  it("picks up INFER_MODEL", () => {
+    process.env.INFER_MODEL = "gpt-4o";
+    expect(loadConfig().model).toBe("gpt-4o");
+  });
+
+  it("picks up INFER_API_KEY", () => {
+    process.env.INFER_API_KEY = "sk-test-123";
+    expect(loadConfig().api_key).toBe("sk-test-123");
+  });
+
+  it("env vars override config file defaults", () => {
+    process.env.INFER_MODEL = "override-model";
+    const cfg = loadConfig();
+    expect(cfg.model).toBe("override-model");
   });
 });
 
