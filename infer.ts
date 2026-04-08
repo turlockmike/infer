@@ -21,6 +21,8 @@ import { spawnSync } from "child_process";
 import { parseArgs } from "util";
 import { createInterface } from "readline";
 
+const VERSION = "1.0.0";
+
 // --- Config paths ---
 const CONFIG_DIR    = join(homedir(), ".config", "infer");
 const GLOBAL_CONFIG = join(CONFIG_DIR, "config.json");
@@ -349,6 +351,51 @@ export async function runRepl(opts: {
 // --- Entry point ---
 if (import.meta.main) {
   const argv = process.argv.slice(2);
+
+  if (argv[0] === "--version" || argv[0] === "-V") {
+    console.log(VERSION);
+    process.exit(0);
+  }
+
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    console.log(`infer — pipe-friendly LLM agent harness with a bash tool
+
+Usage:
+  infer [OPTIONS] PROMPT
+  infer                     enter REPL (interactive mode)
+  infer repl                enter REPL explicitly
+  infer config <cmd>        manage config
+
+Options:
+  -m, --model MODEL         model name (default: gemma4:latest)
+  -u, --url URL             provider base URL (default: http://localhost:11434/v1)
+  -k, --api-key KEY         API key
+  -s, --system TEXT         system prompt override
+  -r, --role NAME           load role from ~/.config/infer/roles/<name>.md
+  -f, --file FILE           file to use as context (prepended to prompt)
+  -j, --json [SHAPE]        output JSON, optionally validated against a shape
+  -v, --verbose             show tool calls and token stats on stderr
+      --stream              stream tokens as they arrive (default: off)
+      --no-sandbox          use real bash (default: sandboxed via just-bash)
+      --allow-network       enable network access inside the sandbox
+  -h, --help                show this help
+  -V, --version             show version
+
+Config commands:
+  infer config show
+  infer config get <key>
+  infer config set <key> <value>
+  infer config unset <key>
+
+Examples:
+  infer "what directory am i in"
+  cat crash.log | infer "why did this fail"
+  infer -f main.py "explain this"
+  infer -j '{"name":"string","pid":0}' "current process info"
+  infer --stream "write a poem"
+  infer repl`);
+    process.exit(0);
+  }
 
   if (argv[0] === "config") { runConfigCmd(argv.slice(1)); process.exit(0); }
 
