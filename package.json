@@ -1,7 +1,7 @@
 {
   "name": "infer",
   "version": "1.0.0",
-  "description": "Pipe-friendly LLM agent harness with a bash tool",
+  "description": "Pipe-friendly LLM agent harness — one tool: bash",
   "bin": { "infer": "./infer.ts" },
   "scripts": {
     "test": "bun test infer.test.ts",
