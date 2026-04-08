@@ -1,0 +1,21 @@
+{
+  "name": "infer",
+  "version": "1.0.0",
+  "description": "Pipe-friendly LLM agent harness with a bash tool",
+  "bin": { "infer": "./infer.ts" },
+  "scripts": {
+    "test": "bun test",
+    "build:linux-x64":   "bun build --compile --target=bun-linux-x64   infer.ts --outfile dist/infer-linux-x64",
+    "build:linux-arm64": "bun build --compile --target=bun-linux-arm64  infer.ts --outfile dist/infer-linux-arm64",
+    "build:darwin-x64":  "bun build --compile --target=bun-darwin-x64  infer.ts --outfile dist/infer-darwin-x64",
+    "build:darwin-arm64":"bun build --compile --target=bun-darwin-arm64 infer.ts --outfile dist/infer-darwin-arm64",
+    "build:all": "bun run build:linux-x64 && bun run build:linux-arm64 && bun run build:darwin-x64 && bun run build:darwin-arm64"
+  },
+  "dependencies": {
+    "just-bash": "latest",
+    "openai": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
