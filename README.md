@@ -274,7 +274,7 @@ infer requires a model that supports **tool use** (function calling). Not all mo
 | `qwen2.5` | ✅ | Works well |
 | `llama3.1+` | ✅ | Works well |
 | `phi4` | ✅ | Works well |
-| `qwen3` | ⚠️ | Has chain-of-thought mode — append `/no_think` to your prompt or system prompt to suppress it, otherwise responses are slow and verbose |
+| `qwen3` | ✅ | Chain-of-thought mode suppressed automatically via `/no_think` in system prompt |
 | `gemma3` | ❌ | Does not support tool use in Ollama — use `gemma4` instead |
 
 If you see `model 'X' does not support tool use`, switch to a different model or variant.

@@ -51,7 +51,9 @@ File conventions:
 - Read files with: cat -n <path>
 - List directories with: ls -la <path>
 - Write files: cat the file first if it exists, then write full content with tee <path> <<'EOF'\\n...\\nEOF
-- Never overwrite a file without reading it first unless explicitly told to.`;
+- Never overwrite a file without reading it first unless explicitly told to.
+
+/no_think`;
 
 const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [{
   type: "function",
@@ -154,6 +156,12 @@ export function validateShape(data: unknown, shape: unknown): string | null {
     return null;
   }
   return null;
+}
+
+// Strip <think>...</think> blocks that some models (e.g. qwen3) emit as chain-of-thought.
+// /no_think in the system prompt suppresses this for qwen3, but we strip defensively too.
+function stripThinking(content: string): string {
+  return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 }
 
 // --- Session (JSONL) ---
@@ -279,13 +287,14 @@ export async function run(opts: {
           }
         }
       }
+      content = stripThinking(content); // strip any thinking tokens from history
       if (content) process.stdout.write("\n");
       else if (!toolCalls.length) process.stderr.write("infer: warning: model returned empty response\n");
     } else {
       const resp = await callApi(() => client.chat.completions.create({ model, messages, tools: TOOLS }));
       const msg = resp.choices[0].message;
       // Some models (e.g. Gemma4) return reasoning in a non-standard field and leave content empty
-      content = msg.content || (msg as any).reasoning || "";
+      content = stripThinking(msg.content || (msg as any).reasoning || "");
       toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
       if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
     }
@@ -422,11 +431,12 @@ export async function runRepl(opts: {
             }
           }
         }
+        content = stripThinking(content); // strip any thinking tokens from history
         if (content) process.stdout.write("\n");
       } else {
         const resp = await callApi(() => client.chat.completions.create({ model, messages, tools: TOOLS }));
         const msg = resp.choices[0].message;
-        content = msg.content || (msg as any).reasoning || "";
+        content = stripThinking(msg.content || (msg as any).reasoning || "");
         toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
         if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
       }
