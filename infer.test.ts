@@ -51,13 +51,6 @@ mock.module("openai", () => ({
   },
 }));
 
-mock.module("just-bash", () => ({
-  Bash: class { exec = async () => ({ stdout: "mocked", stderr: "" }); },
-  MountableFs: class { mount = () => {}; },
-  InMemoryFs: class {},
-  ReadWriteFs: class {},
-}));
-
 // readline mock — controlled via replInputs queue
 let replInputs: (string | null)[] = [];
 mock.module("readline", () => ({
@@ -174,6 +167,16 @@ describe("run() non-streaming", () => {
     const code = await run({ ...BASE_OPTS, prompt: "loop", maxSteps: 3, sandbox: true });
     expect(code).toBe(1);
     expect(mockCreate).toHaveBeenCalledTimes(3);
+  });
+
+  it("defaults to 10 max steps", async () => {
+    mockCreate.mockResolvedValue({
+      choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"echo hi"}' } }] } }],
+      usage: { completion_tokens: 5, prompt_tokens: 20 },
+    });
+    const code = await run({ ...BASE_OPTS, prompt: "loop" });
+    expect(code).toBe(1);
+    expect(mockCreate).toHaveBeenCalledTimes(10);
   });
 
   it("does not stream by default", async () => {

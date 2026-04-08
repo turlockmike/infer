@@ -388,9 +388,10 @@ Options:
   -r, --role NAME           load role from ~/.config/infer/roles/<name>.md
   -f, --file FILE           file to use as context (prepended to prompt)
   -j, --json [SHAPE]        output JSON, optionally validated against a shape
+  -n, --max-steps N         max tool-call iterations per run (default: 10)
   -v, --verbose             show tool calls and token stats on stderr
       --stream              stream tokens as they arrive (default: off)
-      --no-sandbox          use real bash (default: sandboxed via just-bash)
+      --no-sandbox          use real bash (default: sandboxed via sandbox-exec)
       --allow-network       enable network access inside the sandbox
   -h, --help                show this help
   -V, --version             show version
@@ -438,6 +439,7 @@ Examples:
       stream:        { type: "boolean", default: false },
       "no-sandbox":  { type: "boolean", default: false },
       "allow-network": { type: "boolean", default: false },
+      "max-steps":   { type: "string",  short: "n", default: "10" },
     },
     allowPositionals: true,
   });
@@ -480,7 +482,7 @@ Examples:
   }
 
   if (!prompt) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
     process.exit(1);
   }
 
@@ -495,5 +497,6 @@ Examples:
     jsonMode,
     sandbox:      !(values["no-sandbox"] ?? false),
     allowNetwork: values["allow-network"] ?? false,
+    maxSteps:     parseInt(values["max-steps"] ?? "10", 10),
   });
 }
