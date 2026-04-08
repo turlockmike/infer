@@ -252,9 +252,21 @@ export async function run(opts: {
   for (let step = 1; step <= maxSteps; step++) {
     let content = "";
     let toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
+    // Wrap API call to catch "does not support tools" and give an actionable error
+    const callApi = async <T>(fn: () => Promise<T>): Promise<T> => {
+      try { return await fn(); } catch (e: any) {
+        if (typeof e?.message === "string" && /does not support tools/i.test(e.message)) {
+          process.stderr.write(`infer: model '${model}' does not support tool use.\n`);
+          process.stderr.write(`  Try a different variant — e.g. a larger quantisation or an instruct model.\n`);
+          process.stderr.write(`  Ollama: check 'ollama list' and pick a model tagged as supporting tools.\n`);
+          process.exit(1);
+        }
+        throw e;
+      }
+    };
 
     if (stream) {
-      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
+      const resp = await callApi(() => client.chat.completions.create({ model, messages, tools: TOOLS, stream: true }));
       for await (const chunk of resp) {
         const delta = chunk.choices[0]?.delta;
         if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
@@ -270,7 +282,7 @@ export async function run(opts: {
       if (content) process.stdout.write("\n");
       else if (!toolCalls.length) process.stderr.write("infer: warning: model returned empty response\n");
     } else {
-      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
+      const resp = await callApi(() => client.chat.completions.create({ model, messages, tools: TOOLS }));
       const msg = resp.choices[0].message;
       // Some models (e.g. Gemma4) return reasoning in a non-standard field and leave content empty
       content = msg.content || (msg as any).reasoning || "";
@@ -384,9 +396,20 @@ export async function runRepl(opts: {
     while (!replied) {
       let content = "";
       let toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
+      const callApi = async <T>(fn: () => Promise<T>): Promise<T> => {
+        try { return await fn(); } catch (e: any) {
+          if (typeof e?.message === "string" && /does not support tools/i.test(e.message)) {
+            process.stderr.write(`infer: model '${model}' does not support tool use.\n`);
+            process.stderr.write(`  Try a different variant — e.g. a larger quantisation or an instruct model.\n`);
+            process.stderr.write(`  Ollama: check 'ollama list' and pick a model tagged as supporting tools.\n`);
+            process.exit(1);
+          }
+          throw e;
+        }
+      };
 
       if (stream) {
-        const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
+        const resp = await callApi(() => client.chat.completions.create({ model, messages, tools: TOOLS, stream: true }));
         for await (const chunk of resp) {
           const delta = chunk.choices[0]?.delta;
           if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
@@ -401,7 +424,7 @@ export async function runRepl(opts: {
         }
         if (content) process.stdout.write("\n");
       } else {
-        const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
+        const resp = await callApi(() => client.chat.completions.create({ model, messages, tools: TOOLS }));
         const msg = resp.choices[0].message;
         content = msg.content || (msg as any).reasoning || "";
         toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];

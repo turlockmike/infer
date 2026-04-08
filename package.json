@@ -6,6 +6,7 @@
   "scripts": {
     "test": "bun test infer.test.ts",
     "test:e2e": "bun test ./infer.e2e.ts",
+    "test:behavioral": "bun test ./infer.behavioral.ts",
     "build:linux-x64":   "bun build --compile --target=bun-linux-x64   infer.ts --outfile dist/infer-linux-x64",
     "build:linux-arm64": "bun build --compile --target=bun-linux-arm64  infer.ts --outfile dist/infer-linux-arm64",
     "build:darwin-x64":  "bun build --compile --target=bun-darwin-x64  infer.ts --outfile dist/infer-darwin-x64",

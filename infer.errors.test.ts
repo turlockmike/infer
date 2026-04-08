@@ -59,6 +59,29 @@ describe("provider errors", () => {
     mockCreate.mockRejectedValueOnce(err);
     await expect(run({ ...BASE_OPTS, prompt: "test" })).rejects.toThrow(/ECONNREFUSED/);
   });
+
+  it("exits with clear message when model does not support tools", async () => {
+    const err = new Error("registry.ollama.ai/library/gemma3:latest does not support tools");
+    mockCreate.mockRejectedValueOnce(err);
+    const stderrChunks: string[] = [];
+    const origStderr = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (s: string) => { stderrChunks.push(s); return true; };
+    const origExit = process.exit;
+    let exitCode: number | undefined;
+    (process as any).exit = (code: number) => { exitCode = code; throw new Error("process.exit"); };
+    try {
+      await run({ ...BASE_OPTS, prompt: "test" });
+    } catch (e: any) {
+      if (e.message !== "process.exit") throw e;
+    } finally {
+      (process.stderr as any).write = origStderr;
+      (process as any).exit = origExit;
+    }
+    expect(exitCode).toBe(1);
+    const stderr = stderrChunks.join("");
+    expect(stderr).toContain("does not support tool use");
+    expect(stderr).toContain("ollama list");
+  });
 });
 
 // --- Session file errors ---
