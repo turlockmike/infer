@@ -104,6 +104,73 @@ Pipes cleanly into `jq`:
 infer -j '["string"]' "list files in /tmp" | jq '.[]'
 ```
 
+## Remote Resources
+
+infer has one tool: bash. Remote services are just CLI commands.
+
+**Existing CLIs work directly:**
+
+```bash
+# Summarize a pull request
+gh pr view 42 | infer "what's the risk level of this change?"
+
+# Explain recent commits
+git log --oneline -20 | infer "summarize what changed this week"
+
+# Diagnose cloud resources
+aws ec2 describe-instances | infer "which instances are unhealthy and why?"
+```
+
+**No CLI? Use [murl](https://github.com/turlockmike/murl) — curl for MCP servers:**
+
+```bash
+# Call any MCP server tool from bash
+murl https://mcp.example.com/tools/search -d query="auth bug" | infer "root cause?"
+
+# Explore what a server can do
+murl https://mcp.example.com/tools | infer "what does this service expose?"
+
+# Chain tools
+murl https://mcp.example.com/tools/get-pr -d id=42 | infer "is this safe to merge?"
+```
+
+murl outputs NDJSON — infer reads it via stdin, pipes clean.
+
+## Prompts as Files
+
+A prompt is just a file. Use `-f` to pass context, `-s` to override the system prompt:
+
+```bash
+# Use a saved prompt as context
+infer -f prompts/code-review.md < src/auth.py
+
+# Use a saved prompt as the system prompt
+infer -s "$(cat prompts/security-reviewer.md)" < src/auth.py
+```
+
+**Skills are just a prompt file + a bin script:**
+
+```bash
+# ~/.config/infer/prompts/review.md
+You are a senior engineer doing a code review. Focus on: correctness, security, and performance.
+Flag anything that could fail in production. Be direct. No praise.
+```
+
+```bash
+# ~/bin/review  (chmod +x)
+#!/bin/bash
+infer -s "$(cat ~/.config/infer/prompts/review.md)" "$@"
+```
+
+```bash
+# Now it's just a command
+review < src/auth.py
+cat src/*.py | review "focus on the auth module"
+gh pr diff 42 | review "is this safe to merge?"
+```
+
+No framework. No config. Prompts are text, skills are scripts, remote services are CLIs.
+
 ## Config
 
 ```bash
