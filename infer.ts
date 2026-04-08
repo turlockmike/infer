@@ -19,6 +19,9 @@ import { join } from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { parseArgs } from "util";
+import { createInterface } from "readline";
+
+const VERSION = "1.0.0";
 
 // --- Config paths ---
 const CONFIG_DIR    = join(homedir(), ".config", "infer");
@@ -174,6 +177,7 @@ export async function run(opts: {
   jsonMode: boolean | string;
   sandbox: boolean;
   allowNetwork: boolean;
+  stream?: boolean;
   maxSteps?: number;
 }): Promise<number> {
   const { prompt, url, model, apiKey, system, verbose, jsonMode, sandbox, allowNetwork, maxSteps = 10 } = opts;
@@ -184,46 +188,73 @@ export async function run(opts: {
     { role: "user", content: prompt },
   ];
 
-  if (verbose) process.stderr.write(`model=${model} url=${url} sandbox=${sandbox}\n`);
+  const stream = (opts.stream ?? false) && !jsonMode;
+  if (verbose) process.stderr.write(`model=${model} url=${url} sandbox=${sandbox} stream=${stream}\n`);
 
   for (let step = 1; step <= maxSteps; step++) {
-    const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
-    const msg = resp.choices[0].message;
+    let content = "";
+    let toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
 
-    if (msg.tool_calls?.length) {
-      for (const call of msg.tool_calls) {
-        const cmd = JSON.parse(call.function.arguments).command as string;
-        const output = await execBash(cmd, sandbox, allowNetwork, cwd);
-        if (verbose) { process.stderr.write(`+ ${cmd}\n`); process.stderr.write(`${output}\n`); }
-        messages.push(msg);
-        messages.push({ role: "tool", tool_call_id: call.id, content: output });
-      }
-    } else {
-      let content = msg.content ?? "";
-
-      if (jsonMode) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(content);
-        } catch (e: any) {
-          process.stderr.write(`infer: invalid JSON: ${e.message}\n`);
-          messages.push(msg);
-          messages.push({ role: "user", content: `Your response was not valid JSON. Error: ${e.message}\nYou returned: ${content}\nFix it and respond with valid JSON only. No markdown, no code fences, no explanation.` });
-          continue;
-        }
-        if (typeof jsonMode === "string") {
-          const err = validateShape(parsed, JSON.parse(jsonMode));
-          if (err) {
-            process.stderr.write(`infer: shape mismatch: ${err}\n`);
-            messages.push(msg);
-            messages.push({ role: "user", content: `Your response was invalid. Problem: ${err}\nYou returned: ${content}\nRequired shape: ${jsonMode}\nFix it and respond with valid JSON matching that shape exactly. Nothing else.` });
-            continue;
+    if (stream) {
+      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
+      for await (const chunk of resp) {
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            if (!toolCalls[tc.index]) toolCalls[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            if (tc.id) toolCalls[tc.index].id += tc.id;
+            if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
+            if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
           }
         }
       }
-
-      console.log(content);
+      if (content) process.stdout.write("\n");
+    } else {
+      const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
+      const msg = resp.choices[0].message;
+      content = msg.content ?? "";
+      toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
       if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
+    }
+
+    if (toolCalls.length) {
+      if (stream && content) { /* already printed above */ }
+      const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content, tool_calls: toolCalls };
+      messages.push(assistantMsg);
+      for (const call of toolCalls) {
+        const cmd = JSON.parse(call.function.arguments).command as string;
+        const output = await execBash(cmd, sandbox, allowNetwork, cwd);
+        if (verbose) { process.stderr.write(`+ ${cmd}\n`); process.stderr.write(`${output}\n`); }
+        messages.push({ role: "tool", tool_call_id: call.id, content: output });
+      }
+    } else {
+      if (!stream) {
+
+        if (jsonMode) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(content);
+          } catch (e: any) {
+            process.stderr.write(`infer: invalid JSON: ${e.message}\n`);
+            const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content };
+            messages.push(assistantMsg);
+            messages.push({ role: "user", content: `Your response was not valid JSON. Error: ${e.message}\nYou returned: ${content}\nFix it and respond with valid JSON only. No markdown, no code fences, no explanation.` });
+            continue;
+          }
+          if (typeof jsonMode === "string") {
+            const err = validateShape(parsed, JSON.parse(jsonMode));
+            if (err) {
+              process.stderr.write(`infer: shape mismatch: ${err}\n`);
+              const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content };
+              messages.push(assistantMsg);
+              messages.push({ role: "user", content: `Your response was invalid. Problem: ${err}\nYou returned: ${content}\nRequired shape: ${jsonMode}\nFix it and respond with valid JSON matching that shape exactly. Nothing else.` });
+              continue;
+            }
+          }
+        }
+        console.log(content);
+      }
       return 0;
     }
   }
@@ -232,12 +263,143 @@ export async function run(opts: {
   return 1;
 }
 
+// --- REPL ---
+export async function runRepl(opts: {
+  url: string;
+  model: string;
+  apiKey: string;
+  system: string;
+  verbose: boolean;
+  sandbox: boolean;
+  allowNetwork: boolean;
+  stream?: boolean;
+}): Promise<void> {
+  const { url, model, apiKey, system, verbose, sandbox, allowNetwork, stream = false } = opts;
+  const cwd = process.cwd();
+  const client = new OpenAI({ baseURL: url, apiKey });
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: system },
+  ];
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  process.stdout.write(`infer repl  ${model}  Ctrl+C or 'exit' to quit\n\n`);
+
+  const readLine = () => new Promise<string | null>((resolve) => {
+    rl.question("> ", resolve);
+    rl.once("close", () => resolve(null));
+  });
+
+  rl.on("SIGINT", () => { process.stdout.write("\n"); rl.close(); });
+
+  while (true) {
+    const input = await readLine();
+    if (input === null || input.trim() === "exit" || input.trim() === "quit") break;
+    if (!input.trim()) continue;
+
+    messages.push({ role: "user", content: input });
+
+    let replied = false;
+    while (!replied) {
+      let content = "";
+      let toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
+
+      if (stream) {
+        const resp = await client.chat.completions.create({ model, messages, tools: TOOLS, stream: true });
+        for await (const chunk of resp) {
+          const delta = chunk.choices[0]?.delta;
+          if (delta?.content) { process.stdout.write(delta.content); content += delta.content; }
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (!toolCalls[tc.index]) toolCalls[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+              if (tc.id) toolCalls[tc.index].id += tc.id;
+              if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
+              if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
+            }
+          }
+        }
+        if (content) process.stdout.write("\n");
+      } else {
+        const resp = await client.chat.completions.create({ model, messages, tools: TOOLS });
+        const msg = resp.choices[0].message;
+        content = msg.content ?? "";
+        toolCalls = (msg.tool_calls ?? []) as OpenAI.Chat.ChatCompletionMessageToolCall[];
+        if (verbose) process.stderr.write(`[${resp.usage?.completion_tokens} tok, prompt=${resp.usage?.prompt_tokens}]\n`);
+      }
+
+      if (toolCalls.length) {
+        const assistantMsg: OpenAI.Chat.ChatCompletionMessageParam = { role: "assistant", content, tool_calls: toolCalls };
+        messages.push(assistantMsg);
+        for (const call of toolCalls) {
+          const cmd = JSON.parse(call.function.arguments).command as string;
+          const output = await execBash(cmd, sandbox, allowNetwork, cwd);
+          if (verbose) { process.stderr.write(`+ ${cmd}\n`); process.stderr.write(`${output}\n`); }
+          messages.push({ role: "tool", tool_call_id: call.id, content: output });
+        }
+      } else {
+        if (!stream) process.stdout.write(content + "\n");
+        messages.push({ role: "assistant", content });
+        replied = true;
+      }
+    }
+
+    process.stdout.write("\n");
+  }
+
+  rl.close();
+}
+
 // --- Entry point ---
 if (import.meta.main) {
   const argv = process.argv.slice(2);
 
+  if (argv[0] === "--version" || argv[0] === "-V") {
+    console.log(VERSION);
+    process.exit(0);
+  }
+
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    console.log(`infer — pipe-friendly LLM agent harness with a bash tool
+
+Usage:
+  infer [OPTIONS] PROMPT
+  infer                     enter REPL (interactive mode)
+  infer repl                enter REPL explicitly
+  infer config <cmd>        manage config
+
+Options:
+  -m, --model MODEL         model name (default: gemma4:latest)
+  -u, --url URL             provider base URL (default: http://localhost:11434/v1)
+  -k, --api-key KEY         API key
+  -s, --system TEXT         system prompt override
+  -r, --role NAME           load role from ~/.config/infer/roles/<name>.md
+  -f, --file FILE           file to use as context (prepended to prompt)
+  -j, --json [SHAPE]        output JSON, optionally validated against a shape
+  -v, --verbose             show tool calls and token stats on stderr
+      --stream              stream tokens as they arrive (default: off)
+      --no-sandbox          use real bash (default: sandboxed via just-bash)
+      --allow-network       enable network access inside the sandbox
+  -h, --help                show this help
+  -V, --version             show version
+
+Config commands:
+  infer config show
+  infer config get <key>
+  infer config set <key> <value>
+  infer config unset <key>
+
+Examples:
+  infer "what directory am i in"
+  cat crash.log | infer "why did this fail"
+  infer -f main.py "explain this"
+  infer -j '{"name":"string","pid":0}' "current process info"
+  infer --stream "write a poem"
+  infer repl`);
+    process.exit(0);
+  }
+
   if (argv[0] === "config") { runConfigCmd(argv.slice(1)); process.exit(0); }
 
+  const isReplCmd = argv[0] === "repl";
   const cfg = loadConfig();
   const hasConfig = existsSync(GLOBAL_CONFIG) || existsSync(LOCAL_CONFIG);
   if (!hasConfig) {
@@ -249,7 +411,7 @@ if (import.meta.main) {
   }
 
   const { values, positionals } = parseArgs({
-    args: argv,
+    args: isReplCmd ? argv.slice(1) : argv,
     options: {
       model:         { type: "string",  short: "m", default: cfg.model },
       url:           { type: "string",  short: "u", default: cfg.url },
@@ -259,6 +421,7 @@ if (import.meta.main) {
       file:          { type: "string",  short: "f" },
       json:          { type: "string",  short: "j" },
       verbose:       { type: "boolean", short: "v", default: false },
+      stream:        { type: "boolean", default: false },
       "no-sandbox":  { type: "boolean", default: false },
       "allow-network": { type: "boolean", default: false },
     },
@@ -281,22 +444,37 @@ if (import.meta.main) {
   const promptArg    = positionals.join(" ");
   const prompt       = context && promptArg ? `${context}\n\n${promptArg}` : context || promptArg;
 
+  const replMode = isReplCmd || (!prompt && !!process.stdin.isTTY);
+
+  if (replMode) {
+    await runRepl({
+      url:          values.url ?? cfg.url,
+      model:        values.model ?? cfg.model,
+      apiKey:       values["api-key"] ?? cfg.api_key,
+      system,
+      verbose:      values.verbose ?? false,
+      stream:       values.stream ?? false,
+      sandbox:      !(values["no-sandbox"] ?? false),
+      allowNetwork: values["allow-network"] ?? false,
+    });
+    process.exit(0);
+  }
+
   if (!prompt) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -v\n  --no-sandbox  --allow-network\n  config show|get|set|unset");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
     process.exit(1);
   }
 
-  const code = await run({
+  process.exitCode = await run({
     prompt,
     url:          values.url ?? cfg.url,
     model:        values.model ?? cfg.model,
     apiKey:       values["api-key"] ?? cfg.api_key,
     system,
     verbose:      values.verbose ?? false,
+    stream:       values.stream ?? false,
     jsonMode,
     sandbox:      !(values["no-sandbox"] ?? false),
     allowNetwork: values["allow-network"] ?? false,
   });
-
-  process.exit(code);
 }
