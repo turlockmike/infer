@@ -14,7 +14,7 @@
 
 import OpenAI from "openai";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
-import { join } from "path";
+import { extname, join } from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { parseArgs } from "util";
@@ -158,6 +158,33 @@ export function validateShape(data: unknown, shape: unknown): string | null {
   return null;
 }
 
+// --- Images ---
+// Map common image extensions to MIME types. Data URLs in OpenAI-compatible APIs
+// need the MIME type correct — providers use it to dispatch to the right decoder.
+const IMAGE_MIME: Record<string, string> = {
+  ".jpg":  "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png":  "image/png",
+  ".gif":  "image/gif",
+  ".webp": "image/webp",
+};
+
+/**
+ * Read an image file and return an OpenAI-compatible image_url content part
+ * using a base64 data URL. Works with any provider that accepts the OpenAI
+ * multimodal content schema — Ollama, OpenAI, OpenRouter, LM Studio, etc.
+ *
+ * Errors are thrown (not process.exit) so callers can decide how to handle them.
+ */
+export function encodeImagePart(path: string): { type: "image_url"; image_url: { url: string } } {
+  if (!existsSync(path)) throw new Error(`infer: image file not found: ${path}`);
+  const ext = extname(path).toLowerCase();
+  const mime = IMAGE_MIME[ext];
+  if (!mime) throw new Error(`infer: unsupported image extension '${ext}' (supported: ${Object.keys(IMAGE_MIME).join(", ")})`);
+  const b64 = readFileSync(path).toString("base64");
+  return { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } };
+}
+
 // Strip chain-of-thought blocks that thinking models emit before their final response.
 // Most open-source thinking models (DeepSeek-R1, Qwen3, GLM-Z1/5.1, nemotron-cascade)
 // adopted <think>...</think>. A few use the longer <thinking> variant.
@@ -248,15 +275,25 @@ export async function run(opts: {
   stream?: boolean;
   maxSteps?: number;
   initialMessages?: OpenAI.Chat.ChatCompletionMessageParam[];
+  images?: string[];
 }): Promise<{ code: number; messages: OpenAI.Chat.ChatCompletionMessageParam[] }> {
-  const { prompt, url, model, apiKey, system, verbose, jsonMode, sandbox, allowNetwork, maxSteps = 10, initialMessages } = opts;
+  const { prompt, url, model, apiKey, system, verbose, jsonMode, sandbox, allowNetwork, maxSteps = 10, initialMessages, images } = opts;
   const cwd = process.cwd();
   const client = new OpenAI({ baseURL: url, apiKey });
+  // Build user content: multimodal array when images attached, plain string otherwise.
+  // Providers that don't support vision will reject the array shape — the error
+  // surfaces from the API call, which is the right place for it.
+  const userContent: OpenAI.Chat.ChatCompletionUserMessageParam["content"] = images && images.length
+    ? [
+        ...(prompt ? [{ type: "text" as const, text: prompt }] : []),
+        ...images.map(encodeImagePart),
+      ]
+    : prompt;
   // Prior session messages (no system) + fresh system prepended + new user turn appended
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: system },
     ...(initialMessages ?? []),
-    { role: "user", content: prompt },
+    { role: "user", content: userContent },
   ];
   const sessionStart = 1 + (initialMessages?.length ?? 0); // index of new user message
 
@@ -502,6 +539,7 @@ Options:
   -s, --system TEXT         system prompt override
   -r, --role NAME           load role from ~/.config/infer/roles/<name>.md
   -f, --file FILE           file to use as context (prepended to prompt)
+  -i, --image FILE          attach an image (repeatable); requires a vision model
   -j, --json [SHAPE]        output JSON, optionally validated against a shape
   -S, --session FILE        JSONL session file — load prior turns, append this turn
   -n, --max-steps N         max tool-call iterations per run (default: 10)
@@ -522,6 +560,8 @@ Examples:
   infer "what directory am i in"
   cat crash.log | infer "why did this fail"
   infer -f main.py "explain this"
+  infer -i frame.jpg "describe what you see"
+  infer -i a.png -i b.png "compare these images"
   infer -j '{"name":"string","pid":0}' "current process info"
   infer --stream "write a poem"
   infer repl
@@ -554,6 +594,7 @@ Examples:
       system:        { type: "string",  short: "s", default: cfg.system },
       role:          { type: "string",  short: "r" },
       file:          { type: "string",  short: "f" },
+      image:         { type: "string",  short: "i", multiple: true },
       json:          { type: "string",  short: "j" },
       session:       { type: "string",  short: "S" },
       verbose:       { type: "boolean", short: "v", default: false },
@@ -604,12 +645,14 @@ Examples:
   }
 
   if (!prompt) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -i IMAGE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
     process.exit(1);
   }
 
   const sessionFile = values.session;
   const initialMessages = sessionFile ? loadSession(sessionFile) : undefined;
+
+  const images = (values.image as string[] | undefined) ?? [];
 
   const { code, messages: resultMessages } = await run({
     prompt,
@@ -624,6 +667,7 @@ Examples:
     allowNetwork:    values["allow-network"] ?? false,
     maxSteps:        parseInt(values["max-steps"] ?? "10", 10),
     initialMessages,
+    images,
   });
 
   if (sessionFile) {
