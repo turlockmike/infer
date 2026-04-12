@@ -670,4 +670,14 @@ describe("run() with images", () => {
     expect(userMsg.content).toHaveLength(1);
     expect(userMsg.content[0].type).toBe("image_url");
   });
+
+  it("image-only invocation still completes successfully (no prompt required)", async () => {
+    const img = join(tmp, "img.png"); writeFileSync(img, Buffer.from([0x89]));
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "looks like a PNG", tool_calls: null } }],
+      usage: { completion_tokens: 3, prompt_tokens: 20 },
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "", images: [img] });
+    expect(code).toBe(0);
+  });
 });

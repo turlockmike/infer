@@ -627,7 +627,12 @@ Examples:
     ? `${basePrompt}\n\nRespond with JSON only.`
     : basePrompt;
 
-  const replMode = isReplCmd || (!prompt && !!process.stdin.isTTY);
+  const images = (values.image as string[] | undefined) ?? [];
+
+  // REPL only when there's nothing to infer from — no prompt, no images, and a TTY.
+  // An image-only invocation (`infer -r vision -i frame.jpg`) is a valid one-shot
+  // call, not an invitation to REPL.
+  const replMode = isReplCmd || (!prompt && !images.length && !!process.stdin.isTTY);
 
   if (replMode) {
     await runRepl({
@@ -644,15 +649,13 @@ Examples:
     process.exit(0);
   }
 
-  if (!prompt) {
+  if (!prompt && !images.length) {
     console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -i IMAGE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
     process.exit(1);
   }
 
   const sessionFile = values.session;
   const initialMessages = sessionFile ? loadSession(sessionFile) : undefined;
-
-  const images = (values.image as string[] | undefined) ?? [];
 
   const { code, messages: resultMessages } = await run({
     prompt,

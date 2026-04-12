@@ -196,6 +196,9 @@ infer -i invoice.png -j '{"total":0,"currency":"string"}' "extract the total"
 
 # Stdin text + image
 cat context.txt | infer -i chart.png "does this chart match the claim in the text?"
+
+# Image-only invocation with a role that encodes the task — no prompt needed
+infer -r security-camera -i frame.jpg
 ```
 
 Supported formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`. Images are sent as base64 data URLs
