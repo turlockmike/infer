@@ -2,7 +2,8 @@ import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from "bun:te
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { validateShape, run, runRepl, loadConfig, loadSession, appendToSession } from "./infer";
+import { validateShape, run, runRepl, loadConfig, loadSession, appendToSession, encodeImagePart } from "./infer";
+import { writeFileSync } from "fs";
 
 // --- validateShape ---
 describe("validateShape", () => {
@@ -557,5 +558,116 @@ describe("session JSONL", () => {
     expect(capturedMessages).toHaveLength(4);
     expect(capturedMessages[1].content).toBe("first question");
     expect(capturedMessages[3].content).toBe("second question");
+  });
+});
+
+// --- image input ---
+describe("encodeImagePart", () => {
+  let tmp: string;
+  beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), "infer-img-")); });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("encodes a PNG file as a data URL", () => {
+    const path = join(tmp, "x.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47])); // PNG magic
+    const part = encodeImagePart(path);
+    expect(part.type).toBe("image_url");
+    expect(part.image_url.url.startsWith("data:image/png;base64,")).toBe(true);
+    // base64("\x89PNG") = "iVBORw==" — first 4 bytes of a PNG signature
+    expect(part.image_url.url).toContain("iVBORw==");
+  });
+
+  it("detects jpeg extension as image/jpeg", () => {
+    const path = join(tmp, "x.jpeg");
+    writeFileSync(path, Buffer.from([0xff, 0xd8, 0xff])); // JPEG magic
+    expect(encodeImagePart(path).image_url.url.startsWith("data:image/jpeg;base64,")).toBe(true);
+  });
+
+  it("detects .jpg as image/jpeg", () => {
+    const path = join(tmp, "x.jpg");
+    writeFileSync(path, Buffer.from([0xff]));
+    expect(encodeImagePart(path).image_url.url.startsWith("data:image/jpeg;base64,")).toBe(true);
+  });
+
+  it("detects webp", () => {
+    const path = join(tmp, "x.webp");
+    writeFileSync(path, Buffer.from([0]));
+    expect(encodeImagePart(path).image_url.url.startsWith("data:image/webp;base64,")).toBe(true);
+  });
+
+  it("throws on missing file", () => {
+    expect(() => encodeImagePart(join(tmp, "nope.png"))).toThrow(/not found/);
+  });
+
+  it("throws on unsupported extension", () => {
+    const path = join(tmp, "x.bmp");
+    writeFileSync(path, Buffer.from([0]));
+    expect(() => encodeImagePart(path)).toThrow(/unsupported/);
+  });
+});
+
+describe("run() with images", () => {
+  let tmp: string;
+  beforeEach(() => { mockCreate.mockClear(); tmp = mkdtempSync(join(tmpdir(), "infer-img-run-")); });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("builds multimodal user content when images are attached", async () => {
+    const imgPath = join(tmp, "frame.png");
+    writeFileSync(imgPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    let capturedMessages: any[] = [];
+    mockCreate.mockImplementationOnce(async ({ messages }: any) => {
+      capturedMessages = messages;
+      return { choices: [{ message: { content: "a PNG", tool_calls: null } }], usage: { completion_tokens: 3, prompt_tokens: 20 } };
+    });
+    const { code } = await run({ ...BASE_OPTS, prompt: "describe this", images: [imgPath] });
+    expect(code).toBe(0);
+    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    expect(Array.isArray(userMsg.content)).toBe(true);
+    expect(userMsg.content[0]).toEqual({ type: "text", text: "describe this" });
+    expect(userMsg.content[1].type).toBe("image_url");
+    expect(userMsg.content[1].image_url.url.startsWith("data:image/png;base64,")).toBe(true);
+  });
+
+  it("supports multiple images in one call", async () => {
+    const a = join(tmp, "a.png"); writeFileSync(a, Buffer.from([0x89]));
+    const b = join(tmp, "b.jpg"); writeFileSync(b, Buffer.from([0xff, 0xd8]));
+
+    let capturedMessages: any[] = [];
+    mockCreate.mockImplementationOnce(async ({ messages }: any) => {
+      capturedMessages = messages;
+      return { choices: [{ message: { content: "ok", tool_calls: null } }], usage: { completion_tokens: 1, prompt_tokens: 20 } };
+    });
+    await run({ ...BASE_OPTS, prompt: "compare", images: [a, b] });
+    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    expect(userMsg.content).toHaveLength(3); // text + 2 images
+    expect(userMsg.content[1].image_url.url).toContain("image/png");
+    expect(userMsg.content[2].image_url.url).toContain("image/jpeg");
+  });
+
+  it("uses plain string content when no images are attached", async () => {
+    let capturedMessages: any[] = [];
+    mockCreate.mockImplementationOnce(async ({ messages }: any) => {
+      capturedMessages = messages;
+      return { choices: [{ message: { content: "ok", tool_calls: null } }], usage: { completion_tokens: 1, prompt_tokens: 20 } };
+    });
+    await run({ ...BASE_OPTS, prompt: "hi" });
+    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    expect(typeof userMsg.content).toBe("string");
+    expect(userMsg.content).toBe("hi");
+  });
+
+  it("omits the text part when prompt is empty but images are attached", async () => {
+    const img = join(tmp, "img.png"); writeFileSync(img, Buffer.from([0x89]));
+    let capturedMessages: any[] = [];
+    mockCreate.mockImplementationOnce(async ({ messages }: any) => {
+      capturedMessages = messages;
+      return { choices: [{ message: { content: "ok", tool_calls: null } }], usage: { completion_tokens: 1, prompt_tokens: 20 } };
+    });
+    await run({ ...BASE_OPTS, prompt: "", images: [img] });
+    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    expect(Array.isArray(userMsg.content)).toBe(true);
+    expect(userMsg.content).toHaveLength(1);
+    expect(userMsg.content[0].type).toBe("image_url");
   });
 });

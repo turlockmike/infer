@@ -68,6 +68,7 @@ infer [OPTIONS] [PROMPT]
   -s TEXT           System prompt override
   -r ROLE           Named role — loads ~/.config/infer/roles/<name>.md
   -f FILE           File to use as context (prepended to prompt)
+  -i FILE           Attach an image (repeatable); requires a vision-capable model
   -j [SHAPE]        Output JSON, optionally validated against a shape
   -n N              Max tool-call iterations per run (default: 10)
   -v                Verbose — show tool calls and token stats on stderr
@@ -177,6 +178,30 @@ Pipes cleanly into `jq`:
 ```bash
 infer -j '["string"]' "list files in /tmp" | jq '.[]'
 ```
+
+## Images
+
+Attach images with `-i FILE`. The flag is repeatable — pass multiple images in one call.
+Requires a vision-capable model (e.g. `gemma4:e2b-it-q4_K_M`, `qwen2.5vl`, `gpt-4o`).
+
+```bash
+# Describe a single image
+infer -i frame.jpg "describe what you see"
+
+# Compare two images
+infer -i before.png -i after.png "what changed?"
+
+# Extract structured data from a screenshot
+infer -i invoice.png -j '{"total":0,"currency":"string"}' "extract the total"
+
+# Stdin text + image
+cat context.txt | infer -i chart.png "does this chart match the claim in the text?"
+```
+
+Supported formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`. Images are sent as base64 data URLs
+in the OpenAI multimodal content format, which works with any provider that supports it
+(Ollama, OpenAI, OpenRouter, LM Studio, etc.). If the model doesn't support vision, the
+provider will return an error.
 
 ## Remote Resources
 
