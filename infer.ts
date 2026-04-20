@@ -845,7 +845,7 @@ Examples:
     stream:          values.stream ?? false,
     jsonMode,
     sandbox:         !(values["no-sandbox"] ?? false),
-    allowNetwork:    values["allow-network"] ?? false,
+    allowNetwork:    !(values["no-network"] ?? false),
     maxSteps:        parseInt(values["max-steps"] ?? "10", 10),
     initialMessages,
     images,
