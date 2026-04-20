@@ -47,7 +47,7 @@ const OPTS = {
   url: URL, model: MODEL, apiKey: KEY,
   system: cfg.system,   // use the actual system prompt, not a simplified one
   verbose: false, jsonMode: false as const,
-  sandbox: false, allowNetwork: false,
+  sandbox: false, allowNetwork: true,
   maxSteps: 5,
 };
 

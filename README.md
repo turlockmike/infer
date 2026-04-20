@@ -74,7 +74,7 @@ infer [OPTIONS] [PROMPT]
   -v                Verbose — show tool calls and token stats on stderr
   --stream          Stream tokens as they arrive (default: off)
   --no-sandbox      Use real bash (default: sandboxed via sandbox-exec)
-  --allow-network   Enable network access inside the sandbox
+  --no-network      Block network access inside the sandbox (default: allowed)
 ```
 
 stdin is context, argument is the instruction:
@@ -118,7 +118,7 @@ cp /tmp/review.jsonl /tmp/review-fork.jsonl       # branch from this point
 
 ## Sandbox
 
-By default, bash commands run in a sandbox — real system binaries with OS-enforced write restrictions. Network access is blocked and writes are restricted to the current directory and `/tmp`.
+By default, bash commands run in a sandbox — real system binaries with OS-enforced write restrictions. Writes are restricted to the current directory and `/tmp`. Network access is allowed by default; pass `--no-network` to block it.
 
 | Platform | Sandbox backend |
 |----------|----------------|
@@ -127,8 +127,8 @@ By default, bash commands run in a sandbox — real system binaries with OS-enfo
 | Other    | No sandbox — runs unrestricted |
 
 ```bash
-infer "list files here"                   # sandboxed
-infer --allow-network "fetch example.com" # enable network in sandbox
+infer "list files here"                   # sandboxed, network allowed
+infer --no-network "ls only, no curl"     # block network in sandbox
 infer --no-sandbox "unrestricted bash"    # bypass sandbox entirely
 ```
 

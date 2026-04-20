@@ -24,12 +24,12 @@ const cwd = process.cwd();
 const tcpProbe = "(echo > /dev/tcp/127.0.0.1/80) 2>&1; echo EXIT:$?";
 
 describe("sandbox: network blocking", () => {
-  it.skipIf(!hasSandbox)("blocks network by default (OS returns EPERM)", async () => {
+  it.skipIf(!hasSandbox)("blocks network when allowNetwork is false (OS returns EPERM)", async () => {
     const out = await execBash(tcpProbe, true, false, cwd);
     expect(out).toMatch(/operation not permitted/i);
   }, 10_000);
 
-  it.skipIf(!hasSandbox)("allows network with --allow-network (TCP stack responds normally)", async () => {
+  it.skipIf(!hasSandbox)("allows network when allowNetwork is true (TCP stack responds normally)", async () => {
     // Network is allowed — we get "Connection refused" (no web server), never EPERM
     const out = await execBash(tcpProbe, true, true, cwd);
     expect(out).not.toMatch(/operation not permitted/i);
