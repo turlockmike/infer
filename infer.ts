@@ -8,7 +8,7 @@
  *   cat file | infer "question about it"
  *   infer -f crash.log "why did this fail"
  *   infer -r coder "fix this"
- *   infer --allow-network "fetch example.com"
+ *   infer --no-network "block network in sandbox"
  *   infer --no-sandbox "unrestricted bash"
  */
 
@@ -20,7 +20,7 @@ import { spawnSync } from "child_process";
 import { parseArgs } from "util";
 import { createInterface } from "readline";
 
-const VERSION = "1.1.0";
+const VERSION = "2.0.0";
 
 // --- Config paths ---
 // _configDirOverride is only set in tests to inject a temp dir.
@@ -712,7 +712,8 @@ Options:
   -v, --verbose             show tool calls and token stats on stderr
       --stream              stream tokens as they arrive (default: off)
       --no-sandbox          use real bash (default: sandboxed via sandbox-exec)
-      --allow-network       enable network access inside the sandbox
+      --no-network          block network access inside the sandbox (default: network allowed)
+      --allow-network       [deprecated, no-op — network is now allowed by default]
   -h, --help                show this help
   -V, --version             show version
 
@@ -776,7 +777,8 @@ Examples:
       verbose:       { type: "boolean", short: "v", default: false },
       stream:        { type: "boolean", default: false },
       "no-sandbox":  { type: "boolean", default: false },
-      "allow-network": { type: "boolean", default: false },
+      "no-network":    { type: "boolean", default: false },
+      "allow-network": { type: "boolean", default: false }, // deprecated no-op (kept for back-compat)
       "max-steps":   { type: "string",  short: "n", default: "10" },
     },
     allowPositionals: true,
@@ -819,14 +821,14 @@ Examples:
       verbose:      values.verbose ?? false,
       stream:       values.stream ?? false,
       sandbox:      !(values["no-sandbox"] ?? false),
-      allowNetwork: values["allow-network"] ?? false,
+      allowNetwork: !(values["no-network"] ?? false),
       session:      values.session,
     });
     process.exit(0);
   }
 
   if (!prompt && !images.length) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -i IMAGE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset|use|profile  repl");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -i IMAGE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --no-network\n  config show|get|set|unset|use|profile  repl");
     process.exit(1);
   }
 

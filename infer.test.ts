@@ -102,7 +102,7 @@ mock.module("readline", () => ({
 
 const BASE_OPTS = {
   url: "http://x", model: "m", apiKey: "x", system: "s",
-  verbose: false, jsonMode: false as const, sandbox: false, allowNetwork: false,
+  verbose: false, jsonMode: false as const, sandbox: false, allowNetwork: true,
 };
 
 // --- thinking block stripping ---
@@ -379,7 +379,7 @@ describe("run() streaming", () => {
 // --- runRepl() ---
 const REPL_OPTS = {
   url: "http://x", model: "m", apiKey: "x",
-  system: "s", verbose: false, sandbox: false, allowNetwork: false,
+  system: "s", verbose: false, sandbox: false, allowNetwork: true,
 };
 
 describe("runRepl()", () => {

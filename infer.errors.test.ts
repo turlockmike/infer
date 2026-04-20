@@ -31,7 +31,7 @@ mock.module("readline", () => ({
 
 const BASE_OPTS = {
   url: "http://x", model: "m", apiKey: "x", system: "s",
-  verbose: false, jsonMode: false as const, sandbox: false, allowNetwork: false,
+  verbose: false, jsonMode: false as const, sandbox: false, allowNetwork: true,
 };
 
 // --- Provider errors ---

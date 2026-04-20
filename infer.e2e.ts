@@ -43,7 +43,7 @@ const OPTS = {
   url: E2E_URL, model: E2E_MODEL, apiKey: E2E_KEY,
   system: "You have one tool: bash. Use it for everything. Output only what was asked for. No preamble.",
   verbose: false, jsonMode: false as const,
-  sandbox: false, allowNetwork: false,
+  sandbox: false, allowNetwork: true,
 };
 
 describe("E2E: simple response (no tools)", () => {
