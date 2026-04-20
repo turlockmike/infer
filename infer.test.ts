@@ -1,9 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { validateShape, run, runRepl, loadConfig, loadSession, appendToSession, encodeImagePart } from "./infer";
-import { writeFileSync } from "fs";
+import { validateShape, run, runRepl, loadConfig, loadSession, appendToSession, runConfigCmd, _setConfigDir, encodeImagePart } from "./infer";
 
 // --- validateShape ---
 describe("validateShape", () => {
@@ -679,5 +678,332 @@ describe("run() with images", () => {
     });
     const { code } = await run({ ...BASE_OPTS, prompt: "", images: [img] });
     expect(code).toBe(0);
+  });
+});
+
+// --- Helpers for profile tests ---
+// Isolate each test by overriding the config dir via the exported _configDirOverride.
+// (Bun's homedir() ignores process.env.HOME — uses getpwuid — so we use a module-level override instead.)
+function withTmpConfig<T>(fn: (configDir: string) => T): T {
+  const configDir = mkdtempSync(join(tmpdir(), "infer-cfg-"));
+  _setConfigDir(configDir);
+  try {
+    return fn(configDir);
+  } finally {
+    _setConfigDir(undefined);
+    rmSync(configDir, { recursive: true });
+  }
+}
+
+function writeConfig(configDir: string, data: object) {
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "config.json"), JSON.stringify(data, null, 2));
+}
+
+function writeProfile(configDir: string, name: string, data: object) {
+  mkdirSync(join(configDir, "profiles"), { recursive: true });
+  writeFileSync(join(configDir, "profiles", `${name}.json`), JSON.stringify(data, null, 2));
+}
+
+function captureOutput(fn: () => void): { stdout: string; stderr: string } {
+  const logs: string[] = [];
+  const errs: string[] = [];
+  const origLog   = console.log;
+  const origError = console.error;
+  console.log   = (...args: any[]) => logs.push(args.join(" "));
+  console.error = (...args: any[]) => errs.push(args.join(" "));
+  fn();
+  console.log   = origLog;
+  console.error = origError;
+  return { stdout: logs.join("\n"), stderr: errs.join("\n") };
+}
+
+// --- loadConfig — profile precedence ---
+describe("loadConfig — profile precedence", () => {
+  it("returns defaults when no config or profile", () => {
+    withTmpConfig(() => {
+      // clear env vars to avoid interference
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      delete process.env.INFER_URL;
+      delete process.env.INFER_MODEL;
+      delete process.env.INFER_API_KEY;
+      const cfg = loadConfig();
+      process.env.INFER_URL     = saved.url;
+      process.env.INFER_MODEL   = saved.model;
+      process.env.INFER_API_KEY = saved.key;
+      expect(cfg.url).toBe("http://localhost:11434/v1");
+      expect(cfg.model).toBe("gemma4:latest");
+      expect(cfg.api_key).toBe("ollama");
+      expect(cfg.profile).toBeUndefined();
+    });
+  });
+
+  it("profile-only: profile values used when no global override", () => {
+    withTmpConfig((configDir) => {
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      delete process.env.INFER_URL; delete process.env.INFER_MODEL; delete process.env.INFER_API_KEY;
+      writeConfig(configDir, { profile: "tower" });
+      writeProfile(configDir, "tower", { url: "http://192.168.4.30:11434/v1", model: "llama3:latest" });
+      const cfg = loadConfig();
+      process.env.INFER_URL = saved.url; process.env.INFER_MODEL = saved.model; process.env.INFER_API_KEY = saved.key;
+      expect(cfg.url).toBe("http://192.168.4.30:11434/v1");
+      expect(cfg.model).toBe("llama3:latest");
+      expect(cfg.profile).toBe("tower");
+    });
+  });
+
+  it("global config url/model override profile values", () => {
+    withTmpConfig((configDir) => {
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      delete process.env.INFER_URL; delete process.env.INFER_MODEL; delete process.env.INFER_API_KEY;
+      writeConfig(configDir, { profile: "tower", url: "http://override:9000/v1" });
+      writeProfile(configDir, "tower", { url: "http://192.168.4.30:11434/v1", model: "llama3:latest" });
+      const cfg = loadConfig();
+      process.env.INFER_URL = saved.url; process.env.INFER_MODEL = saved.model; process.env.INFER_API_KEY = saved.key;
+      // global url wins over profile url
+      expect(cfg.url).toBe("http://override:9000/v1");
+      // profile model still applies (no global model override)
+      expect(cfg.model).toBe("llama3:latest");
+    });
+  });
+
+  it("env var overrides both profile and global config", () => {
+    withTmpConfig((configDir) => {
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      writeConfig(configDir, { profile: "tower", url: "http://override:9000/v1" });
+      writeProfile(configDir, "tower", { url: "http://192.168.4.30:11434/v1", model: "llama3:latest" });
+      process.env.INFER_URL = "http://env-wins:1234/v1";
+      const cfg = loadConfig();
+      process.env.INFER_URL = saved.url; process.env.INFER_MODEL = saved.model; process.env.INFER_API_KEY = saved.key;
+      expect(cfg.url).toBe("http://env-wins:1234/v1");
+    });
+  });
+
+  it("missing profile file is silently skipped", () => {
+    withTmpConfig((configDir) => {
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      delete process.env.INFER_URL; delete process.env.INFER_MODEL; delete process.env.INFER_API_KEY;
+      writeConfig(configDir, { profile: "ghost" }); // no profile file
+      const cfg = loadConfig();
+      process.env.INFER_URL = saved.url; process.env.INFER_MODEL = saved.model; process.env.INFER_API_KEY = saved.key;
+      // falls back to defaults
+      expect(cfg.url).toBe("http://localhost:11434/v1");
+      expect(cfg.profile).toBe("ghost");
+    });
+  });
+});
+
+// --- runConfigCmd — use ---
+describe("runConfigCmd use", () => {
+  it("activates an existing profile", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, {});
+      writeProfile(configDir, "tower", { url: "http://tower/v1" });
+      const out = captureOutput(() => runConfigCmd(["use", "tower"]));
+      expect(out.stdout).toContain("tower");
+      // config should now have profile=tower
+      const cfg = loadConfig();
+      expect(cfg.profile).toBe("tower");
+    });
+  });
+
+  it("errors if profile does not exist", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, {});
+      let exited = false;
+      const origExit = process.exit;
+      (process as any).exit = () => { exited = true; throw new Error("exit"); };
+      try {
+        captureOutput(() => runConfigCmd(["use", "ghost"]));
+      } catch {}
+      (process as any).exit = origExit;
+      expect(exited).toBe(true);
+    });
+  });
+
+  it("clears active profile with --none", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, { profile: "tower" });
+      writeProfile(configDir, "tower", { url: "http://tower/v1" });
+      captureOutput(() => runConfigCmd(["use", "--none"]));
+      const cfg = loadConfig();
+      expect(cfg.profile).toBeUndefined();
+    });
+  });
+});
+
+// --- runConfigCmd — profile list ---
+describe("runConfigCmd profile list", () => {
+  it("lists no profiles when dir doesn't exist", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, {});
+      const out = captureOutput(() => runConfigCmd(["profile", "list"]));
+      expect(out.stdout).toBe("");
+    });
+  });
+
+  it("lists profiles, marking the active one", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, { profile: "tower" });
+      writeProfile(configDir, "tower", { url: "http://tower/v1" });
+      writeProfile(configDir, "local", { url: "http://localhost/v1" });
+      const out = captureOutput(() => runConfigCmd(["profile", "list"]));
+      expect(out.stdout).toContain("tower (active)");
+      expect(out.stdout).toContain("local");
+      expect(out.stdout).not.toContain("local (active)");
+    });
+  });
+});
+
+// --- runConfigCmd — profile show ---
+describe("runConfigCmd profile show", () => {
+  it("prints key=value lines for the profile", () => {
+    withTmpConfig((configDir) => {
+      writeProfile(configDir, "tower", { url: "http://tower/v1", model: "gemma4:latest" });
+      const out = captureOutput(() => runConfigCmd(["profile", "show", "tower"]));
+      expect(out.stdout).toContain("url=http://tower/v1");
+      expect(out.stdout).toContain("model=gemma4:latest");
+    });
+  });
+
+  it("errors if profile not found", () => {
+    withTmpConfig(() => {
+      let exited = false;
+      const origExit = process.exit;
+      (process as any).exit = () => { exited = true; throw new Error("exit"); };
+      try { captureOutput(() => runConfigCmd(["profile", "show", "ghost"])); } catch {}
+      (process as any).exit = origExit;
+      expect(exited).toBe(true);
+    });
+  });
+});
+
+// --- runConfigCmd — profile add ---
+describe("runConfigCmd profile add", () => {
+  it("creates a profile file with given fields", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, {});
+      captureOutput(() => runConfigCmd(["profile", "add", "tower", "--url", "http://tower/v1", "--model", "llama3"]));
+      const cfg = loadConfig();
+      // activate and check
+      captureOutput(() => runConfigCmd(["use", "tower"]));
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      delete process.env.INFER_URL; delete process.env.INFER_MODEL; delete process.env.INFER_API_KEY;
+      const resolved = loadConfig();
+      process.env.INFER_URL = saved.url; process.env.INFER_MODEL = saved.model; process.env.INFER_API_KEY = saved.key;
+      expect(resolved.url).toBe("http://tower/v1");
+      expect(resolved.model).toBe("llama3");
+    });
+  });
+
+  it("errors if no fields provided", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, {});
+      let exited = false;
+      const origExit = process.exit;
+      (process as any).exit = () => { exited = true; throw new Error("exit"); };
+      try { captureOutput(() => runConfigCmd(["profile", "add", "empty"])); } catch {}
+      (process as any).exit = origExit;
+      expect(exited).toBe(true);
+    });
+  });
+
+  it("errors if profile already exists", () => {
+    withTmpConfig((configDir) => {
+      writeProfile(configDir, "tower", { url: "http://tower/v1" });
+      let exited = false;
+      const origExit = process.exit;
+      (process as any).exit = () => { exited = true; throw new Error("exit"); };
+      try { captureOutput(() => runConfigCmd(["profile", "add", "tower", "--url", "http://other/v1"])); } catch {}
+      (process as any).exit = origExit;
+      expect(exited).toBe(true);
+    });
+  });
+});
+
+// --- runConfigCmd — profile edit ---
+describe("runConfigCmd profile edit", () => {
+  it("merges new fields into an existing profile", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, { profile: "tower" });
+      writeProfile(configDir, "tower", { url: "http://tower/v1", model: "old-model" });
+      captureOutput(() => runConfigCmd(["profile", "edit", "tower", "--model", "new-model"]));
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      delete process.env.INFER_URL; delete process.env.INFER_MODEL; delete process.env.INFER_API_KEY;
+      const resolved = loadConfig();
+      process.env.INFER_URL = saved.url; process.env.INFER_MODEL = saved.model; process.env.INFER_API_KEY = saved.key;
+      expect(resolved.url).toBe("http://tower/v1");   // unchanged
+      expect(resolved.model).toBe("new-model");        // updated
+    });
+  });
+
+  it("errors if profile not found", () => {
+    withTmpConfig(() => {
+      let exited = false;
+      const origExit = process.exit;
+      (process as any).exit = () => { exited = true; throw new Error("exit"); };
+      try { captureOutput(() => runConfigCmd(["profile", "edit", "ghost", "--url", "x"])); } catch {}
+      (process as any).exit = origExit;
+      expect(exited).toBe(true);
+    });
+  });
+});
+
+// --- runConfigCmd — profile rm ---
+describe("runConfigCmd profile rm", () => {
+  it("removes a profile file", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, {});
+      writeProfile(configDir, "tower", { url: "http://tower/v1" });
+      captureOutput(() => runConfigCmd(["profile", "rm", "tower"]));
+      const out = captureOutput(() => runConfigCmd(["profile", "list"]));
+      expect(out.stdout).not.toContain("tower");
+    });
+  });
+
+  it("clears active profile when removing the active one", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, { profile: "tower" });
+      writeProfile(configDir, "tower", { url: "http://tower/v1" });
+      captureOutput(() => runConfigCmd(["profile", "rm", "tower"]));
+      const cfg = loadConfig();
+      expect(cfg.profile).toBeUndefined();
+    });
+  });
+
+  it("errors if profile not found", () => {
+    withTmpConfig(() => {
+      let exited = false;
+      const origExit = process.exit;
+      (process as any).exit = () => { exited = true; throw new Error("exit"); };
+      try { captureOutput(() => runConfigCmd(["profile", "rm", "ghost"])); } catch {}
+      (process as any).exit = origExit;
+      expect(exited).toBe(true);
+    });
+  });
+});
+
+// --- runConfigCmd — config show with profile ---
+describe("runConfigCmd show with profile", () => {
+  it("shows profile=(none) when no profile active", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, { url: "http://x/v1", model: "m", api_key: "k" });
+      const out = captureOutput(() => runConfigCmd(["show"]));
+      expect(out.stdout).toContain("profile=(none)");
+    });
+  });
+
+  it("shows active profile name in config show", () => {
+    withTmpConfig((configDir) => {
+      writeConfig(configDir, { profile: "tower" });
+      writeProfile(configDir, "tower", { url: "http://tower/v1", model: "llama3" });
+      const saved = { url: process.env.INFER_URL, model: process.env.INFER_MODEL, key: process.env.INFER_API_KEY };
+      delete process.env.INFER_URL; delete process.env.INFER_MODEL; delete process.env.INFER_API_KEY;
+      const out = captureOutput(() => runConfigCmd(["show"]));
+      process.env.INFER_URL = saved.url; process.env.INFER_MODEL = saved.model; process.env.INFER_API_KEY = saved.key;
+      expect(out.stdout).toContain("profile=tower");
+      expect(out.stdout).toContain("url=http://tower/v1");
+      expect(out.stdout).toContain("model=llama3");
+    });
   });
 });

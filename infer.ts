@@ -13,7 +13,7 @@
  */
 
 import OpenAI from "openai";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, unlinkSync } from "fs";
 import { extname, join } from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
@@ -23,10 +23,14 @@ import { createInterface } from "readline";
 const VERSION = "1.1.0";
 
 // --- Config paths ---
-const CONFIG_DIR    = join(homedir(), ".config", "infer");
-const GLOBAL_CONFIG = join(CONFIG_DIR, "config.json");
-const GLOBAL_SYSTEM = join(CONFIG_DIR, "system.md");
-const GLOBAL_ROLES  = join(CONFIG_DIR, "roles");
+// _configDirOverride is only set in tests to inject a temp dir.
+let _configDirOverride: string | undefined;
+export function _setConfigDir(dir: string | undefined) { _configDirOverride = dir; }
+function getConfigDir(): string  { return _configDirOverride ?? join(homedir(), ".config", "infer"); }
+function getGlobalConfig(): string { return join(getConfigDir(), "config.json"); }
+function getGlobalSystem(): string { return join(getConfigDir(), "system.md"); }
+function getGlobalRoles(): string  { return join(getConfigDir(), "roles"); }
+function getProfilesDir(): string  { return join(getConfigDir(), "profiles"); }
 const LOCAL_CONFIG  = ".infer.json";
 const LOCAL_SYSTEM  = ".infer.md";
 
@@ -71,36 +75,179 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [{
 }];
 
 // --- Config ---
-export function loadConfig(): typeof DEFAULTS & { system: string } {
-  let cfg = { ...DEFAULTS };
+
+function profilePath(name: string): string {
+  return join(getProfilesDir(), `${name}.json`);
+}
+
+function readGlobalConfig(): Record<string, any> {
+  const p = getGlobalConfig();
+  return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : {};
+}
+
+function writeGlobalConfig(data: Record<string, any>) {
+  mkdirSync(getConfigDir(), { recursive: true });
+  writeFileSync(getGlobalConfig(), JSON.stringify(data, null, 2));
+}
+
+export function loadConfig(): typeof DEFAULTS & { system: string; profile?: string } {
+  let cfg: Record<string, any> = { ...DEFAULTS };
   const systemParts: string[] = [];
 
-  for (const [cfgPath, sysPath] of [[GLOBAL_CONFIG, GLOBAL_SYSTEM], [LOCAL_CONFIG, LOCAL_SYSTEM]]) {
-    if (existsSync(cfgPath)) Object.assign(cfg, JSON.parse(readFileSync(cfgPath, "utf8")));
-    if (existsSync(sysPath)) systemParts.push(readFileSync(sysPath, "utf8").trim());
+  // 1. Global config (read first to get the active profile name before applying its values)
+  const globalData = readGlobalConfig();
+
+  // 2. Active profile — layer in before global config fields so global wins
+  if (globalData.profile && typeof globalData.profile === "string") {
+    const pPath = profilePath(globalData.profile);
+    if (existsSync(pPath)) {
+      const profileData = JSON.parse(readFileSync(pPath, "utf8"));
+      for (const k of VALID_KEYS) {
+        if (profileData[k] !== undefined) cfg[k] = profileData[k];
+      }
+    }
   }
 
-  // Env var overrides — INFER_URL, INFER_MODEL, INFER_API_KEY
+  // 3. Global config fields (url/model/api_key override profile)
+  for (const k of VALID_KEYS) {
+    if (globalData[k] !== undefined) cfg[k] = globalData[k];
+  }
+  if (globalData.profile) cfg.profile = globalData.profile;
+
+  // 4. Local .infer.json
+  if (existsSync(LOCAL_CONFIG)) Object.assign(cfg, JSON.parse(readFileSync(LOCAL_CONFIG, "utf8")));
+
+  // 5. System prompt files
+  const globalSystem = getGlobalSystem();
+  if (existsSync(globalSystem)) systemParts.push(readFileSync(globalSystem, "utf8").trim());
+  if (existsSync(LOCAL_SYSTEM))  systemParts.push(readFileSync(LOCAL_SYSTEM, "utf8").trim());
+
+  // 6. Env var overrides — INFER_URL, INFER_MODEL, INFER_API_KEY
   if (process.env.INFER_URL)     cfg.url     = process.env.INFER_URL;
   if (process.env.INFER_MODEL)   cfg.model   = process.env.INFER_MODEL;
   if (process.env.INFER_API_KEY) cfg.api_key = process.env.INFER_API_KEY;
 
-  return { ...cfg, system: systemParts.length ? systemParts.join("\n\n") : DEFAULT_SYSTEM };
+  return {
+    url:     cfg.url,
+    model:   cfg.model,
+    api_key: cfg.api_key,
+    profile: cfg.profile,
+    system:  systemParts.length ? systemParts.join("\n\n") : DEFAULT_SYSTEM,
+  };
 }
 
 function saveConfig(updates: Partial<Record<ConfigKey, string>>) {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  const current = existsSync(GLOBAL_CONFIG) ? JSON.parse(readFileSync(GLOBAL_CONFIG, "utf8")) : {};
-  writeFileSync(GLOBAL_CONFIG, JSON.stringify({ ...current, ...updates }, null, 2));
+  const current = readGlobalConfig();
+  writeGlobalConfig({ ...current, ...updates });
 }
 
-function runConfigCmd(args: string[]) {
-  const [sub, key, value] = args;
+export function runConfigCmd(args: string[]) {
+  const [sub, ...rest] = args;
+
+  // --- profile subcommands ---
+  if (sub === "profile") {
+    const [profileSub, ...profileRest] = rest;
+
+    if (profileSub === "list") {
+      const globalData = readGlobalConfig();
+      const active = globalData.profile as string | undefined;
+      const profilesDir = getProfilesDir();
+      if (!existsSync(profilesDir)) return; // no profiles, print nothing
+      const { readdirSync } = require("fs") as typeof import("fs");
+      const files = readdirSync(profilesDir).filter((f: string) => f.endsWith(".json"));
+      for (const f of files) {
+        const name = f.replace(/\.json$/, "");
+        console.log(name === active ? `${name} (active)` : name);
+      }
+      return;
+    }
+
+    if (profileSub === "show") {
+      const [name] = profileRest;
+      if (!name) { console.error("usage: infer config profile show <name>"); process.exit(1); }
+      const pPath = profilePath(name);
+      if (!existsSync(pPath)) { console.error(`infer config: profile '${name}' not found`); process.exit(1); }
+      const data = JSON.parse(readFileSync(pPath, "utf8"));
+      for (const k of VALID_KEYS) {
+        if (data[k] !== undefined) console.log(`${k}=${data[k]}`);
+      }
+      return;
+    }
+
+    if (profileSub === "add") {
+      const [name, ...flagArgs] = profileRest;
+      if (!name) { console.error("usage: infer config profile add <name> [--url URL] [--model MODEL] [--api-key KEY]"); process.exit(1); }
+      const pPath = profilePath(name);
+      if (existsSync(pPath)) { console.error(`infer config: profile '${name}' already exists (use 'edit' to modify)`); process.exit(1); }
+      const fields = parseProfileFlags(flagArgs);
+      if (Object.keys(fields).length === 0) { console.error("infer config: at least one of --url, --model, --api-key required"); process.exit(1); }
+      mkdirSync(getProfilesDir(), { recursive: true });
+      writeFileSync(pPath, JSON.stringify(fields, null, 2));
+      console.log(`profile '${name}' created`);
+      return;
+    }
+
+    if (profileSub === "edit") {
+      const [name, ...flagArgs] = profileRest;
+      if (!name) { console.error("usage: infer config profile edit <name> [--url URL] [--model MODEL] [--api-key KEY]"); process.exit(1); }
+      const pPath = profilePath(name);
+      if (!existsSync(pPath)) { console.error(`infer config: profile '${name}' not found`); process.exit(1); }
+      const current = JSON.parse(readFileSync(pPath, "utf8"));
+      const fields = parseProfileFlags(flagArgs);
+      if (Object.keys(fields).length === 0) { console.error("infer config: at least one of --url, --model, --api-key required"); process.exit(1); }
+      writeFileSync(pPath, JSON.stringify({ ...current, ...fields }, null, 2));
+      console.log(`profile '${name}' updated`);
+      return;
+    }
+
+    if (profileSub === "rm") {
+      const [name] = profileRest;
+      if (!name) { console.error("usage: infer config profile rm <name>"); process.exit(1); }
+      const pPath = profilePath(name);
+      if (!existsSync(pPath)) { console.error(`infer config: profile '${name}' not found`); process.exit(1); }
+      unlinkSync(pPath);
+      // Clear active profile if it was this one
+      const globalData = readGlobalConfig();
+      if (globalData.profile === name) {
+        delete globalData.profile;
+        writeGlobalConfig(globalData);
+      }
+      console.log(`profile '${name}' removed`);
+      return;
+    }
+
+    console.error("usage: infer config profile <list|show|add|edit|rm> ...");
+    process.exit(1);
+  }
+
+  // --- use <name> / use --none ---
+  if (sub === "use") {
+    const [target] = rest;
+    if (target === "--none") {
+      const globalData = readGlobalConfig();
+      delete globalData.profile;
+      writeGlobalConfig(globalData);
+      console.log("active profile cleared");
+      return;
+    }
+    if (!target) { console.error("usage: infer config use <name> | --none"); process.exit(1); }
+    if (!existsSync(profilePath(target))) { console.error(`infer config: profile '${target}' not found`); process.exit(1); }
+    const globalData = readGlobalConfig();
+    globalData.profile = target;
+    writeGlobalConfig(globalData);
+    console.log(`profile '${target}' activated`);
+    return;
+  }
+
+  // --- existing subcommands ---
+  const [key, value] = rest;
   const cfg = loadConfig();
 
   if (sub === "show") {
-    const merged = { url: cfg.url, model: cfg.model, api_key: cfg.api_key };
-    for (const [k, v] of Object.entries(merged)) console.log(`${k}=${v}`);
+    console.log(`profile=${cfg.profile ?? "(none)"}`);
+    console.log(`url=${cfg.url}`);
+    console.log(`model=${cfg.model}`);
+    console.log(`api_key=${cfg.api_key}`);
 
   } else if (sub === "get") {
     if (!VALID_KEYS.includes(key as ConfigKey)) { console.error(`infer config: unknown key '${key}'. Valid: ${VALID_KEYS.join(", ")}`); process.exit(1); }
@@ -112,21 +259,40 @@ function runConfigCmd(args: string[]) {
     console.log(`${key}=${value}`);
 
   } else if (sub === "unset") {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-    const current = existsSync(GLOBAL_CONFIG) ? JSON.parse(readFileSync(GLOBAL_CONFIG, "utf8")) : {};
-    delete current[key];
-    writeFileSync(GLOBAL_CONFIG, JSON.stringify(current, null, 2));
-    console.log(`unset ${key}`);
+    const globalData = readGlobalConfig();
+    // allow unsetting 'profile' as a special key
+    if (key === "profile") {
+      delete globalData.profile;
+      writeGlobalConfig(globalData);
+      console.log("unset profile");
+    } else {
+      if (!VALID_KEYS.includes(key as ConfigKey)) { console.error(`infer config: unknown key '${key}'. Valid: ${VALID_KEYS.join(", ")}, profile`); process.exit(1); }
+      delete globalData[key];
+      writeGlobalConfig(globalData);
+      console.log(`unset ${key}`);
+    }
 
   } else {
-    console.error("usage: infer config <show|get|set|unset> [key] [value]");
+    console.error("usage: infer config <show|get|set|unset|use|profile> ...");
     process.exit(1);
   }
 }
 
+// Parse --url / --model / --api-key flags from a flat arg array
+function parseProfileFlags(flagArgs: string[]): Partial<Record<ConfigKey, string>> {
+  const result: Partial<Record<ConfigKey, string>> = {};
+  for (let i = 0; i < flagArgs.length; i++) {
+    const arg = flagArgs[i];
+    if (arg === "--url"     && flagArgs[i + 1]) { result.url     = flagArgs[++i]; }
+    else if (arg === "--model"   && flagArgs[i + 1]) { result.model   = flagArgs[++i]; }
+    else if (arg === "--api-key" && flagArgs[i + 1]) { result.api_key = flagArgs[++i]; }
+  }
+  return result;
+}
+
 // --- Role ---
 function loadRole(name: string): string {
-  const path = join(GLOBAL_ROLES, `${name}.md`);
+  const path = join(getGlobalRoles(), `${name}.md`);
   if (!existsSync(path)) { console.error(`infer: role '${name}' not found at ${path}`); process.exit(1); }
   return readFileSync(path, "utf8").trim();
 }
@@ -551,10 +717,17 @@ Options:
   -V, --version             show version
 
 Config commands:
-  infer config show
-  infer config get <key>
-  infer config set <key> <value>
-  infer config unset <key>
+  infer config show                          show resolved config (including active profile)
+  infer config get <key>                     get a config value
+  infer config set <key> <value>             set a config value
+  infer config unset <key>                   unset a config value
+  infer config use <name>                    activate a named profile
+  infer config use --none                    clear the active profile
+  infer config profile list                  list profiles
+  infer config profile show <name>           show a profile's values
+  infer config profile add <name> [flags]    create a profile (--url, --model, --api-key)
+  infer config profile edit <name> [flags]   merge fields into an existing profile
+  infer config profile rm <name>             delete a profile
 
 Examples:
   infer "what directory am i in"
@@ -566,7 +739,10 @@ Examples:
   infer --stream "write a poem"
   infer repl
   infer -S /tmp/s.jsonl "first question"
-  infer -S /tmp/s.jsonl "follow-up question"`);
+  infer -S /tmp/s.jsonl "follow-up question"
+  infer config profile add tower --url http://192.168.4.30:11434/v1 --model gemma4:latest
+  infer config use tower
+  infer config use --none`);
     process.exit(0);
   }
 
@@ -574,7 +750,7 @@ Examples:
 
   const isReplCmd = argv[0] === "repl";
   const cfg = loadConfig();
-  const hasConfig = existsSync(GLOBAL_CONFIG) || existsSync(LOCAL_CONFIG)
+  const hasConfig = existsSync(getGlobalConfig()) || existsSync(LOCAL_CONFIG)
     || !!(process.env.INFER_URL || process.env.INFER_MODEL || process.env.INFER_API_KEY);
   if (!hasConfig) {
     process.stderr.write("infer: no config found. Set env vars or run:\n");
@@ -650,7 +826,7 @@ Examples:
   }
 
   if (!prompt && !images.length) {
-    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -i IMAGE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset  repl");
+    console.error("usage: infer [options] [prompt]\n\nOptions:\n  -m MODEL  -u URL  -k KEY  -s TEXT  -r ROLE  -f FILE  -i IMAGE  -j [SHAPE]  -S FILE  -n N  -v\n  --stream  --no-sandbox  --allow-network\n  config show|get|set|unset|use|profile  repl");
     process.exit(1);
   }
 
